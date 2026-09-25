@@ -323,45 +323,57 @@ body.locked .auth { display: grid; grid-template-columns: minmax(0, 1.05fr) minm
 .hero-logo { width: min(320px, 70%, 34vh * 1.24); height: auto; }
 .auth-mobile-brand { width: 190px; margin-bottom: 20px; filter: drop-shadow(0 8px 16px rgba(10,42,107,.25)); }
 
-/* ---------- Intro: raio ---------- */
-.intro { position: fixed; inset: 0; z-index: 300; display: none; place-items: center; overflow: hidden;
-  background: radial-gradient(circle at 50% 45%, #123D9A 0%, var(--blue-900) 60%, #040F2E 100%); }
-.intro.on { display: grid; animation: introIn .3s ease-out both; }
-.intro.out { animation: introOut .55s cubic-bezier(.6,0,.4,1) forwards; }
-.intro-glow { position: absolute; width: 70vmin; height: 70vmin; border-radius: 50%; background: radial-gradient(circle, rgba(255,212,0,.35), transparent 65%); opacity: 0; animation: glow 1.9s ease-out .45s both; }
-.intro-stage { position: relative; width: min(440px, 78vw); }
-.intro-logo { position: relative; animation: logoIn .45s cubic-bezier(.2,1.4,.4,1) both, zap .5s ease-out .62s both; }
-.intro-logo img { display: block; width: 100%; filter: drop-shadow(0 12px 30px rgba(0,0,0,.45)); }
-.intro-shine { position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,.95) 48%, rgba(255,250,210,.9) 52%, transparent 65%) no-repeat;
-  background-size: 260% 100%; background-position: 130% 0;
-  -webkit-mask: url(logo.png) center / 100% 100% no-repeat; mask: url(logo.png) center / 100% 100% no-repeat;
-  mix-blend-mode: screen; animation: shine .7s ease-in-out .75s both; }
-.bolt { position: absolute; left: -10%; top: -30%; width: 120%; height: 160%; overflow: visible; pointer-events: none; }
-.bolt polyline { fill: none; stroke: #fff; stroke-linejoin: miter; stroke-linecap: round;
-  }
-.bolt { filter: drop-shadow(0 0 4px #FFE45C) drop-shadow(0 0 12px #FFD400) drop-shadow(0 0 28px #4DA3FF); }
-.bolt-main { stroke-width: 1.6; stroke-dasharray: 100; stroke-dashoffset: 100; animation: strike .22s cubic-bezier(.5,0,1,1) .42s forwards, boltOut .35s ease-out .7s forwards; }
-.bolt-branch { stroke-width: .7; stroke-dasharray: 100; stroke-dashoffset: 100; animation: strike .12s linear .56s forwards, boltOut .3s ease-out .7s forwards; }
-.bolt-branch.b2 { animation-delay: .6s, .72s; }
-.intro-flash { position: absolute; inset: 0; background: #FFFBE0; opacity: 0; pointer-events: none; animation: flash .35s ease-out .62s both; }
-@keyframes introIn { from { opacity: 0; } }
-@keyframes introOut { to { opacity: 0; transform: scale(1.12); filter: blur(4px); } }
-@keyframes logoIn { from { transform: scale(.55) rotate(-4deg); opacity: 0; } }
-@keyframes zap {
-  0% { filter: brightness(2.2) saturate(1.4); transform: translate(0,0) scale(1.04); }
-  20% { transform: translate(-6px,3px) scale(1.04); }
-  40% { transform: translate(5px,-3px) scale(1.03); }
-  60% { transform: translate(-3px,2px) scale(1.02); }
-  100% { filter: none; transform: none; }
-}
-@keyframes strike { to { stroke-dashoffset: 0; } }
-@keyframes boltOut { to { opacity: 0; } }
-@keyframes flash { 0% { opacity: 0; } 10% { opacity: .6; } 100% { opacity: 0; } }
-@keyframes shine { to { background-position: -40% 0; } }
-@keyframes glow { 0% { opacity: 0; transform: scale(.6); } 30% { opacity: 1; } 100% { opacity: .5; transform: scale(1.15); } }
-@media (prefers-reduced-motion: reduce) {
-  .intro *, .intro.on, .intro.out { animation-duration: .01s !important; animation-delay: 0s !important; }
-}
+/* ---------- Intro: logo voando + explosão + cartas ---------- */
+.intro { position: fixed; inset: 0; z-index: 300; display: none; pointer-events: none; overflow: hidden; }
+.intro.on { display: block; pointer-events: auto; }
+.intro-bg { position: absolute; inset: 0; opacity: 0;
+  background: radial-gradient(circle at 50% 50%, #1A4DB8 0%, #0A2A6B 38%, #051538 75%, #020A20 100%); }
+.fx { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+.fx > * { position: absolute; left: 0; top: 0; }
+.fx-rays { width: 160vmax; height: 160vmax; margin: -80vmax 0 0 -80vmax; border-radius: 50%; opacity: 0;
+  background: repeating-conic-gradient(from 0deg, rgba(255,214,10,.0) 0deg 7deg, rgba(255,214,10,.22) 9deg 11deg, rgba(255,214,10,0) 13deg 20deg);
+  -webkit-mask: radial-gradient(circle, #000 0 8%, rgba(0,0,0,.6) 30%, transparent 62%); mask: radial-gradient(circle, #000 0 8%, rgba(0,0,0,.6) 30%, transparent 62%); }
+.fx-cards { width: 0; height: 0; perspective: 1400px; }
+.fx-core { width: 420px; height: 420px; margin: -210px 0 0 -210px; border-radius: 50%; opacity: 0;
+  background: radial-gradient(circle, #FFFFFF 0%, #FFF6C2 18%, rgba(255,212,0,.85) 36%, rgba(255,140,0,.35) 56%, transparent 70%); mix-blend-mode: screen; }
+.fx-ring { width: 260px; height: 260px; margin: -130px 0 0 -130px; border-radius: 50%; opacity: 0;
+  border: 6px solid #FFE45C; box-shadow: 0 0 24px #FFD400, inset 0 0 24px #FFD400; }
+.fx-ring.r2 { border-color: #7CC4FF; box-shadow: 0 0 24px #4DA3FF, inset 0 0 18px #4DA3FF; border-width: 3px; }
+.fx-sparks { width: 0; height: 0; }
+.spark { opacity: 0; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #FFF6C2; box-shadow: 0 0 10px 2px #FFD400; }
+.spark.long { width: 26px; height: 4px; left: -13px; top: -2px; border-radius: 4px; }
+.fly-logo { position: fixed; transform-origin: 50% 50%; will-change: transform; z-index: 5; }
+.fly-logo img { display: block; width: 100%; height: auto; filter: drop-shadow(0 16px 36px rgba(0,0,0,.5)); will-change: transform, filter; }
+
+/* Cartas colecionáveis (design próprio da Cheel Out) */
+.tcard { position: absolute; width: clamp(84px, 8.6vw, 124px); aspect-ratio: 5 / 7; left: 0; top: 0; transform-style: preserve-3d; will-change: transform, opacity; }
+.tc-inner { position: absolute; inset: 0; transform-style: preserve-3d; will-change: transform; }
+.tc-face { position: absolute; inset: 0; border-radius: 9px; backface-visibility: hidden; -webkit-backface-visibility: hidden; overflow: hidden;
+  box-shadow: 0 10px 28px rgba(0,0,0,.45); }
+.tc-front { background: linear-gradient(160deg, #FFE36B, #F2B705 55%, #D99A00); padding: 6%; display: flex; flex-direction: column; }
+.tc-front .tc-body { flex: 1; border-radius: 5px; background: var(--tc-bg); display: flex; flex-direction: column; padding: 6% 7%; gap: 5%; }
+.tc-top { display: flex; justify-content: space-between; align-items: center; font: 900 clamp(7px, .7vw, 10px)/1 'Nunito', sans-serif; color: #10204A; }
+.tc-top b { color: #B3001B; font-size: 1.1em; }
+.tc-art { flex: 1.25; border-radius: 3px; border: 2px solid #E8C04A; background: var(--tc-art); display: grid; place-items: center; box-shadow: inset 0 0 12px rgba(0,0,0,.25); }
+.tc-art svg { width: 52%; height: 52%; fill: #fff; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+.tc-lines { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 12%; }
+.tc-lines i { display: block; height: 3px; border-radius: 2px; background: rgba(16,32,74,.35); }
+.tc-lines i:nth-child(2) { width: 75%; } .tc-lines i:nth-child(3) { width: 55%; }
+.tc-holo { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: color-dodge; opacity: .55;
+  background: linear-gradient(115deg, transparent 20%, rgba(255,0,170,.5) 35%, rgba(0,255,230,.5) 45%, rgba(255,255,0,.5) 55%, transparent 70%);
+  background-size: 250% 250%; animation: holo 1.2s linear infinite; }
+@keyframes holo { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.tc-back { transform: rotateY(180deg);
+  background: radial-gradient(circle at 50% 50%, #1E5BD6 0%, #0A2A6B 55%, #061845 100%);
+  border: 4px solid #0F3A91; display: grid; place-items: center; }
+.tc-back::before { content: ''; position: absolute; inset: 7%; border-radius: 6px; border: 2px solid rgba(255,212,0,.55);
+  background: repeating-linear-gradient(45deg, rgba(255,255,255,.04) 0 6px, transparent 6px 12px); }
+.tc-back svg { position: relative; width: 46%; height: 46%; filter: drop-shadow(0 0 10px rgba(255,212,0,.6)); }
+.t-fire    { --tc-bg: #FCE3D2; --tc-art: radial-gradient(circle at 50% 60%, #FFB23D, #F2542D 70%); }
+.t-water   { --tc-bg: #D9ECFF; --tc-art: radial-gradient(circle at 50% 60%, #7CC4FF, #1E6FE0 70%); }
+.t-grass   { --tc-bg: #DDF5DF; --tc-art: radial-gradient(circle at 50% 60%, #8BE08F, #1F9D4C 70%); }
+.t-electric{ --tc-bg: #FFF6CC; --tc-art: radial-gradient(circle at 50% 60%, #FFE45C, #F2A900 70%); }
+.t-psychic { --tc-bg: #F0E0FF; --tc-art: radial-gradient(circle at 50% 60%, #D59BFF, #8E3FE0 70%); }
+
 img.auth-mobile-brand { display: none; }
 @media (max-width: 900px) { img.auth-mobile-brand { display: block; } }

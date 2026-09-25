@@ -1329,17 +1329,139 @@ const Auth = {
   },
 };
 
-/* ---------- Animação de entrada (raio na logo) ---------- */
+/* ---------- Animação de entrada: logo voa até o centro, explode e lança cartas ---------- */
+const CARD_TIPOS = [
+  ['t-fire', 'M12 2c1 4-3 5-3 9a3 3 0 0 0 6 0c0-1-.5-2-1-3 2 1 4 3.5 4 6.5A6 6 0 0 1 6 14.5C6 9 12 7 12 2z'],
+  ['t-water', 'M12 2s-6 7-6 12a6 6 0 0 0 12 0c0-5-6-12-6-12z'],
+  ['t-grass', 'M20 4C9 4 4 9 4 16c0 1.5.3 3 1 4 1-5 5-9 10-10-4 2-7 5-8 10 9 0 13-6 13-16z'],
+  ['t-electric', 'M13 2 4 14h6l-2 8 10-13h-6l1-7z'],
+  ['t-psychic', 'M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7.1L12 17.3 5.8 21l1.6-7.1L2 9.2l7.1-.6z'],
+];
+const NOMES_CARTA = ['Cheel', 'Out', 'Shop', 'Mega', 'Turbo', 'Ultra', 'Flash', 'Max'];
+
+function cartaHTML(i) {
+  const [cls, d] = CARD_TIPOS[i % CARD_TIPOS.length];
+  return `<div class="tc-inner">
+    <div class="tc-face tc-front ${cls}"><div class="tc-body">
+      <div class="tc-top"><span>${NOMES_CARTA[i % NOMES_CARTA.length]}</span><b>${(i * 37 % 9 + 6) * 10}</b></div>
+      <div class="tc-art"><svg viewBox="0 0 24 24"><path d="${d}"/></svg></div>
+      <div class="tc-lines"><i></i><i></i><i></i></div>
+    </div><div class="tc-holo"></div></div>
+    <div class="tc-face tc-back"><svg viewBox="0 0 48 48"><use href="#mark"/></svg></div>
+  </div>`;
+}
+
 function animarEntrada(depois) {
-  const el = $('#intro');
+  const intro = $('#intro'), fly = $('#flyLogo'), img = $('img', fly), bg = $('#introBg');
   const reduz = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  el.classList.remove('out');
-  el.classList.add('on');
-  // reinicia as animações
-  el.querySelectorAll('*').forEach(n => { n.style.animation = 'none'; void n.getBoundingClientRect(); n.style.animation = ''; });
-  setTimeout(depois, reduz ? 50 : 450);           // monta o painel por baixo da animação
-  setTimeout(() => el.classList.add('out'), reduz ? 100 : 1550);
-  setTimeout(() => el.classList.remove('on', 'out'), reduz ? 200 : 2150);
+  const A = (el, kf, o) => el.animate(kf, { fill: 'both', ...o });
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  // ponto de partida: a logo onde ela está na tela de login
+  const origem = [$('.hero-logo'), $('img.auth-mobile-brand')].find(e => e && e.offsetParent !== null);
+  const vw = innerWidth, vh = innerHeight;
+  const alvoW = Math.min(480, vw * 0.72, vh * 0.62 * 1.24);
+  let r = origem ? origem.getBoundingClientRect() : null;
+  if (!r || !r.width) r = { left: vw / 2 - alvoW / 4, top: vh / 2 - alvoW / 5, width: alvoW / 2, height: alvoW / 2.47 };
+  Object.assign(fly.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px' });
+  const dx = vw / 2 - (r.left + r.width / 2), dy = vh / 2 - (r.top + r.height / 2), s = alvoW / r.width;
+
+  // limpa execuções anteriores
+  intro.getAnimations({ subtree: true }).forEach(a => a.cancel());
+  $('#fxCards').innerHTML = ''; $('#fxSparks').innerHTML = '';
+  intro.classList.add('on');
+  if (origem) origem.style.visibility = 'hidden';
+  const fim = () => { intro.classList.remove('on'); if (origem) origem.style.visibility = ''; $('#fxCards').innerHTML = ''; $('#fxSparks').innerHTML = ''; };
+
+  if (reduz) {
+    A(bg, [{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }], { duration: 500 });
+    fly.style.opacity = 0;
+    setTimeout(depois, 200); setTimeout(fim, 520);
+    return;
+  }
+  fly.style.opacity = '';
+
+  const T_HIT = 720;   // momento da explosão
+  const T_OUT = 2100;  // início da saída
+
+  // 1) fundo escurece
+  A(bg, [{ opacity: 0 }, { opacity: 1 }], { duration: 520, easing: 'ease-out' });
+
+  // 2) logo sai do canto e voa até o centro (antecipação + overshoot)
+  A(fly, [
+    { transform: 'translate(0,0) scale(1) rotate(0deg)', offset: 0 },
+    { transform: 'translate(0,6px) scale(.94) rotate(2deg)', offset: .12 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s * 1.08}) rotate(-4deg)`, offset: .82 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s}) rotate(0deg)`, offset: 1 },
+  ], { duration: T_HIT, easing: 'cubic-bezier(.55,0,.25,1)' });
+
+  // 3) impacto: logo "pulsa" e brilha
+  A(img, [
+    { transform: 'scale(1)', filter: 'drop-shadow(0 16px 36px rgba(0,0,0,.5)) brightness(1)' },
+    { transform: 'scale(1.14)', filter: 'drop-shadow(0 0 40px rgba(255,212,0,.9)) brightness(1.5)', offset: .18 },
+    { transform: 'scale(.97)', offset: .45 },
+    { transform: 'scale(1.02)', offset: .7 },
+    { transform: 'scale(1)', filter: 'drop-shadow(0 16px 36px rgba(0,0,0,.5)) brightness(1)' },
+  ], { duration: 700, delay: T_HIT, easing: 'ease-out', fill: 'none' });
+
+  // tremida de câmera
+  A($('#fx'), [0, 1, 2, 3, 4, 5, 6].map(i => ({ transform: i === 6 ? 'translate(0,0)' : `translate(${rnd(-9, 9)}px,${rnd(-7, 7)}px)` })), { duration: 320, delay: T_HIT, fill: 'none' });
+
+  // 4) explosão: núcleo de luz, ondas de choque e raios
+  A($('#fxCore'), [{ opacity: 0, transform: 'scale(.15)' }, { opacity: 1, transform: 'scale(.9)', offset: .15 }, { opacity: 0, transform: 'scale(2.6)' }], { duration: 650, delay: T_HIT, easing: 'cubic-bezier(.2,.8,.3,1)' });
+  A($('#fxRing1'), [{ opacity: 0, transform: 'scale(.3)' }, { opacity: 1, offset: .1 }, { opacity: 0, transform: 'scale(4.2)' }], { duration: 750, delay: T_HIT, easing: 'cubic-bezier(.1,.7,.3,1)' });
+  A($('#fxRing2'), [{ opacity: 0, transform: 'scale(.3)' }, { opacity: .9, offset: .1 }, { opacity: 0, transform: 'scale(3.4)' }], { duration: 850, delay: T_HIT + 110, easing: 'cubic-bezier(.1,.7,.3,1)' });
+  A($('#fxRays'), [{ opacity: 0, transform: 'rotate(0deg) scale(.6)' }, { opacity: 1, transform: 'rotate(12deg) scale(1)', offset: .2 }, { opacity: .7, offset: .7 }, { opacity: 0, transform: 'rotate(40deg) scale(1.1)' }], { duration: T_OUT - T_HIT + 300, delay: T_HIT, easing: 'ease-out' });
+
+  // faíscas
+  const sparks = $('#fxSparks');
+  for (let i = 0; i < 34; i++) {
+    const sp = document.createElement('i');
+    sp.className = 'spark' + (i % 3 === 0 ? ' long' : '');
+    sparks.appendChild(sp);
+    const ang = rnd(0, Math.PI * 2), dist = rnd(140, Math.max(vw, vh) * 0.45);
+    const rot = ang * 180 / Math.PI;
+    A(sp, [
+      { transform: `rotate(${rot}deg) translate(0,0) scale(1)`, opacity: 1 },
+      { transform: `rotate(${rot}deg) translate(${dist}px,0) scale(.2)`, opacity: 0 },
+    ], { duration: rnd(500, 900), delay: T_HIT + rnd(0, 80), easing: 'cubic-bezier(.1,.8,.3,1)', fill: 'forwards' });
+  }
+
+  // 5) cartas lançadas de trás da logo
+  const cards = $('#fxCards');
+  const N = vw < 700 ? 12 : 18;
+  for (let i = 0; i < N; i++) {
+    const c = document.createElement('div');
+    c.className = 'tcard';
+    c.innerHTML = cartaHTML(i);
+    cards.appendChild(c);
+    const w = c.offsetWidth || 110, h = w * 1.4;
+    c.style.marginLeft = -w / 2 + 'px'; c.style.marginTop = -h / 2 + 'px';
+    // leque: espalha por 360°, com leve preferência para cima
+    const ang = (i / N) * Math.PI * 2 + rnd(-.18, .18) - Math.PI / 2;
+    const dist = Math.max(vw, vh) * rnd(.62, .85);
+    const ex = Math.cos(ang) * dist, ey = Math.sin(ang) * dist * .9;
+    const mx = ex * .42, my = ey * .42 - rnd(40, 110);      // arco
+    const rz = rnd(-260, 260), ry = (Math.random() < .5 ? -1 : 1) * rnd(360, 720);
+    const dur = rnd(1250, 1650), delay = T_HIT + 30 + i * 18;
+    A(c, [
+      { transform: 'translate(0,0) rotate(0deg) scale(.25)', opacity: 0 },
+      { transform: `translate(${mx * .35}px,${my * .35}px) rotate(${rz * .2}deg) scale(.9)`, opacity: 1, offset: .12 },
+      { transform: `translate(${mx}px,${my}px) rotate(${rz * .55}deg) scale(1.15)`, opacity: 1, offset: .45 },
+      { transform: `translate(${ex}px,${ey}px) rotate(${rz}deg) scale(1.3)`, opacity: 0 },
+    ], { duration: dur, delay, easing: 'cubic-bezier(.15,.6,.35,1)' });
+    A($('.tc-inner', c), [{ transform: 'rotateY(180deg) rotateX(0deg)' }, { transform: `rotateY(${180 + ry}deg) rotateX(${rnd(-40, 40)}deg)` }], { duration: dur, delay, easing: 'cubic-bezier(.2,.7,.4,1)' });
+  }
+
+  // 6) monta o painel por baixo e sai da animação
+  setTimeout(depois, T_HIT + 100);
+  const img2 = { duration: 520, delay: T_OUT, easing: 'cubic-bezier(.6,0,.4,1)', fill: 'forwards' };
+  A(fly, [
+    { transform: `translate(${dx}px,${dy}px) scale(${s})`, opacity: 1 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s * 1.35})`, opacity: 0 },
+  ], img2);
+  A(bg, [{ opacity: 1 }, { opacity: 0 }], { ...img2, duration: 600 });
+  setTimeout(fim, T_OUT + 650);
 }
 
 const EYE = '<svg viewBox="0 0 24 24"><path d="M12 5C7 5 2.7 8.1 1 12.5 2.7 16.9 7 20 12 20s9.3-3.1 11-7.5C21.3 8.1 17 5 12 5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
