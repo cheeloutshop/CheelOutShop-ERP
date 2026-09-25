@@ -16,7 +16,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '14';
+const APP_VERSAO = '15';
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -774,7 +774,7 @@ function badgeVenda(s) { return `<span class="badge ${{ 'Atendido': 'green', 'Re
 function viewPedidos(el, tipo) {
   const V = tipo === 'vendas';
   const key = V ? 'Vend' : 'Comp';
-  actions(`<button class="btn accent" id="novoPed">${ICON.plus}${V ? 'Nova venda (frente de caixa)' : 'Novo pedido de compra'}</button>`);
+  actions(`${V ? `<button class="btn ghost" id="impEtq">📄 Importar etiquetas (PDF)</button>` : ''}<button class="btn accent" id="novoPed">${ICON.plus}${V ? 'Nova venda (frente de caixa)' : 'Novo pedido de compra'}</button>`);
   const q = UI['q' + key] || '';
   const st = UI['st' + key] || '';
   const mes = UI['m' + key] ?? '';
@@ -816,6 +816,7 @@ function viewPedidos(el, tipo) {
   $$('[data-st]', el).forEach(b => b.onclick = () => { UI['st' + key] = b.dataset.st; render(); });
   const find = id => Store.data[tipo].find(p => p.id === id);
   $('#novoPed').onclick = () => (V ? formVenda() : formCompra());
+  if (V) $('#impEtq').onclick = abrirImportarEtiquetas;
   $$('[data-edit]', el).forEach(b => b.onclick = () => (V ? formVenda(find(b.dataset.edit)) : formCompra(find(b.dataset.edit))));
   $$('[data-print]', el).forEach(b => b.onclick = () => imprimirPedido(tipo, find(b.dataset.print)));
   $$('[data-fat]', el).forEach(b => b.onclick = () => {
@@ -1967,6 +1968,259 @@ function abrirPDV(v) {
   });
 }
 $('#modal').addEventListener('close', () => $('#modal').classList.remove('pdv-modal'));
+
+/* =========================================================
+   IMPORTAR VENDAS PELO PDF DE ETIQUETAS (Jamble e outras)
+   Tudo é lido no próprio navegador — o PDF não sai do aparelho.
+   ========================================================= */
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+function carregarScript(src) {
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Não consegui carregar o leitor de PDF (verifique a internet)')); document.head.appendChild(s); });
+}
+async function carregarPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await carregarScript(PDFJS_CDN + 'pdf.min.js');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + 'pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+/* Extrai as linhas de texto de cada página, respeitando colunas ( | ) */
+async function lerPaginasPDF(file, progresso) {
+  const lib = await carregarPdfJs();
+  const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const paginas = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    progresso && progresso(n, pdf.numPages);
+    const page = await pdf.getPage(n);
+    const tc = await page.getTextContent();
+    const itens = tc.items.filter(i => i.str && i.str.trim()).map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5], w: i.width || 0 }));
+    itens.sort((a, b) => b.y - a.y || a.x - b.x);
+    const linhas = [];
+    for (const it of itens) {
+      const l = linhas.find(L => Math.abs(L.y - it.y) < 3);
+      if (l) l.itens.push(it); else linhas.push({ y: it.y, itens: [it] });
+    }
+    paginas.push(linhas.sort((a, b) => b.y - a.y).map(L => {
+      L.itens.sort((a, b) => a.x - b.x);
+      let s = '', fim = null;
+      for (const it of L.itens) { if (fim !== null) s += (it.x - fim > 12 ? ' | ' : ' '); s += it.s.trim(); fim = it.x + it.w; }
+      return s.replace(/\s+/g, ' ').trim();
+    }).filter(Boolean));
+  }
+  return paginas;
+}
+const valorBR = s => num(String(s).replace(/[^\d.,]/g, ''));
+function analisarPagina(linhas) {
+  const txt = linhas.join('\n');
+  const r = { linhas, itens: [] };
+  r.rastreio = (txt.match(/\b([A-Z]{2}\d{9}[A-Z]{2})\b/) || [])[1] || '';
+  r.pedido = ((txt.match(/pedido[^\n#:]{0,20}[#:]\s*#?\s*([A-Z0-9][A-Z0-9\-]{3,})/i) || txt.match(/\b(?:order|venda)\s*(?:n[ºo°.]*|#|id)?\s*[:#]\s*#?([A-Z0-9\-]{4,})/i) || [])[1] || '').trim();
+  // destinatário
+  const iD = linhas.findIndex(l => /destinat[aá]rio/i.test(l));
+  if (iD >= 0) {
+    const mesmaLinha = linhas[iD].split(/destinat[aá]rio\s*:?/i)[1];
+    const nome = mesmaLinha && mesmaLinha.split(/\s\|\s|objeto|cpf|rastreio/i)[0].trim();
+    if (nome && nome.length > 2) r.cliente = nome;
+    else {
+      r.cliente = (linhas[iD + 1] || '').split(' | ')[0].trim();
+      const bloco = linhas.slice(iD + 2, iD + 6).join(' ');
+      r.endereco = (linhas[iD + 2] || '').split(' | ')[0].trim();
+      r.cep = (bloco.match(/\b\d{5}-?\d{3}\b/) || [])[0] || '';
+      const cu = bloco.match(/([A-Za-zÀ-ú' .]{3,})\s*[\/\-]\s*([A-Z]{2})\b/);
+      if (cu) { r.cidade = cu[1].replace(/^\d{5}-?\d{3}\s*/, '').trim(); r.uf = cu[2]; }
+    }
+  }
+  // itens: tabela da declaração de conteúdo
+  const iH = linhas.findIndex(l => /conte[uú]do|descri[cç][aã]o|produto/i.test(l) && /qu?a?n?t|qtd/i.test(l));
+  if (iH >= 0) {
+    const temUnit = /unit/i.test(linhas[iH]);
+    for (let k = iH + 1; k < linhas.length; k++) {
+      const l = linhas[k];
+      if (/^\s*(total|peso|assinatura|declaro)/i.test(l) || /\|\s*total\b/i.test(l)) break;
+      const cels = l.split(' | ').map(c => c.trim()).filter(Boolean);
+      const vals = cels.filter(c => /(\d+[.,]\d{2})$/.test(c) && /r\$|,\d{2}$/i.test(c));
+      const ints = cels.filter(c => /^\d{1,4}$/.test(c));
+      const desc = cels.filter(c => !/^\d+$/.test(c) && !/^(r\$\s*)?[\d.]+,\d{2}$/i.test(c)).sort((a, b) => b.length - a.length)[0];
+      if (!desc || !vals.length) continue;
+      const qtd = num(ints.length > 1 ? ints[ints.length - 1] : (ints[0] || 1)) || 1;
+      r.itens.push({ desc, qtd, valorLido: valorBR(vals[vals.length - 1]), unitario: temUnit });
+    }
+  }
+  // outros formatos: "2x Produto ... R$ 25,00"
+  if (!r.itens.length) {
+    for (const l of linhas) {
+      const m = l.replace(/\s\|\s/g, ' ').match(/(\d+)\s*x\s+(.+?)\s+R\$\s*([\d.]+,\d{2})/i);
+      if (m) r.itens.push({ desc: m[2].trim(), qtd: num(m[1]), valorLido: valorBR(m[3]), unitario: false });
+    }
+  }
+  const tot = txt.match(/total[^\n\d]*R?\$?\s*([\d.]+,\d{2})/i);
+  r.total = tot ? valorBR(tot[1]) : 0;
+  return r;
+}
+/* Junta as páginas de um mesmo pedido (etiqueta + declaração) */
+function agruparPedidos(paginas) {
+  const pedidos = [];
+  for (const [i, linhas] of paginas.entries()) {
+    const a = analisarPagina(linhas);
+    const chave = a.rastreio || a.pedido;
+    let p = chave && pedidos.find(x => (a.rastreio && x.rastreio === a.rastreio) || (a.pedido && x.pedido === a.pedido));
+    if (!p && !a.cliente && !chave && pedidos.length) p = pedidos[pedidos.length - 1];
+    if (!p) { p = { paginas: [], itens: [], texto: [] }; pedidos.push(p); }
+    p.paginas.push(i + 1);
+    p.texto.push(`— página ${i + 1} —\n` + linhas.join('\n'));
+    for (const k of ['rastreio', 'pedido', 'cliente', 'endereco', 'cep', 'cidade', 'uf']) if (a[k] && !p[k]) p[k] = a[k];
+    if (a.itens.length && !p.itens.length) { p.itens = a.itens; p.total = a.total; }
+  }
+  // valor da linha: total da linha (padrão Correios) ou unitário
+  for (const p of pedidos) {
+    const somaLinhas = p.itens.reduce((s, i) => s + i.valorLido, 0), somaUnit = p.itens.reduce((s, i) => s + i.valorLido * i.qtd, 0);
+    const ehUnit = p.itens.some(i => i.unitario) || (p.total && Math.abs(somaUnit - p.total) < 0.05 && Math.abs(somaLinhas - p.total) >= 0.05);
+    p.itens.forEach(i => { i.valor = r2(ehUnit ? i.valorLido : i.valorLido / (i.qtd || 1)); });
+  }
+  return pedidos.filter(p => p.cliente || p.itens.length);
+}
+/* Encontra o produto cadastrado mais parecido com a descrição lida */
+function acharProduto(desc) {
+  const pal = s => new Set(norm(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+  const d = pal(desc); let melhor = null, nota = 0;
+  for (const p of Store.data.produtos.filter(x => x.ativo !== 'nao')) {
+    if (norm(p.nome) === norm(desc) || (p.sku && norm(desc).includes(norm(p.sku)))) return p;
+    const q = pal(p.nome); const inter = [...d].filter(w => q.has(w)).length;
+    const n = inter / Math.max(1, Math.min(d.size, q.size) + (Math.abs(d.size - q.size) * 0.25));
+    if (n > nota) { nota = n; melhor = p; }
+  }
+  return nota >= 0.6 ? melhor : null;
+}
+
+function abrirImportarEtiquetas() {
+  const plats = plataformasAtivas().map(p => [p.nome, p.nome + (num(p.comissao) ? ` (${fmtPct(num(p.comissao))}%)` : '')]);
+  const platPadrao = (plataformasAtivas().find(p => /jamble/i.test(p.nome)) || plataformasAtivas()[0] || {}).nome;
+  let pedidos = [];
+  $('#modal').classList.add('pdv-modal');
+  Modal.open({
+    title: 'Importar vendas pelo PDF de etiquetas', submit: 'Lançar vendas selecionadas',
+    body: `
+      <div class="imp-drop" id="impDrop">
+        <input type="file" id="impFile" accept="application/pdf,.pdf" hidden>
+        <div class="imp-ico">📄</div>
+        <b>Arraste aqui o PDF das etiquetas de envio</b>
+        <span class="muted">ou <button type="button" class="link" id="impEscolher">clique para escolher o arquivo</button> — o arquivo é lido no próprio navegador</span>
+      </div>
+      <div class="grid g4" style="margin-top:14px">
+        ${field('Data das vendas', '<input type="date" id="impData" value="' + hoje() + '">')}
+        ${field('Plataforma', `<select id="impPlat">${opt(plats, platPadrao)}</select>`)}
+        ${field('Forma de recebimento', `<select id="impForma">${opt(FORMAS_VENDA, 'Transferência')}</select>`)}
+        ${field('Repasse previsto em (dias)', '<input type="number" id="impDias" min="0" value="7">')}
+      </div>
+      <div id="impRes"></div>`,
+    onOpen: body => {
+      const file = $('#impFile', body), drop = $('#impDrop', body), res = $('#impRes', body);
+      $('#impEscolher', body).onclick = () => file.click();
+      drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('on'); });
+      drop.addEventListener('dragleave', () => drop.classList.remove('on'));
+      drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('on'); if (e.dataTransfer.files[0]) processar(e.dataTransfer.files[0]); });
+      file.onchange = () => file.files[0] && processar(file.files[0]);
+      const existentes = Store.data.vendas.map(v => v.obs || '').join(' ');
+      async function processar(f) {
+        res.innerHTML = '<div class="note">Lendo o PDF…</div>';
+        try {
+          const pags = await lerPaginasPDF(f, (n, t) => { res.innerHTML = `<div class="note">Lendo página ${n} de ${t}…</div>`; });
+          if (!pags.some(p => p.length)) { res.innerHTML = '<div class="note warn">Este PDF não tem texto (parece ser uma imagem escaneada). Me envie um exemplo para eu adaptar a leitura.</div>'; return; }
+          pedidos = agruparPedidos(pags).map(p => ({ ...p, incluir: true, dup: !!((p.pedido && existentes.includes(p.pedido)) || (p.rastreio && existentes.includes(p.rastreio))) }));
+          pedidos.forEach(p => { if (p.dup) p.incluir = false; p.itens.forEach(i => { const m = acharProduto(i.desc); i.produtoId = m ? m.id : ''; }); });
+          pintar(pags.length, f.name);
+        } catch (e) { res.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; }
+      }
+      function pintar(nPags, nome) {
+        if (!pedidos.length) { res.innerHTML = `<div class="note warn">Não encontrei pedidos no arquivo <b>${esc(nome)}</b> (${nPags} páginas). Me envie este PDF para eu ajustar a leitura ao formato da Jamble.</div>`; return; }
+        res.innerHTML = `<div class="section-t">${pedidos.length} pedido(s) encontrado(s) em ${nPags} página(s) — confira antes de lançar</div>` + pedidos.map((p, k) => `
+          <div class="imp-ped ${p.incluir ? '' : 'off'}" data-k="${k}">
+            <div class="imp-head">
+              <label class="check"><input type="checkbox" data-inc ${p.incluir ? 'checked' : ''}></label>
+              <label class="f" style="flex:1">Cliente<input data-cli value="${esc(p.cliente || '')}" placeholder="Nome do comprador"></label>
+              <div class="imp-meta">${p.pedido ? `Pedido <b>${esc(p.pedido)}</b>` : ''}${p.rastreio ? `<br>Rastreio <b>${esc(p.rastreio)}</b>` : ''}${p.cidade ? `<br>${esc(p.cidade)}${p.uf ? '/' + esc(p.uf) : ''}` : ''}</div>
+              ${p.dup ? '<span class="badge amber">já importado</span>' : ''}
+            </div>
+            <table class="imp-itens"><thead><tr><th>Produto no ERP</th><th>Qtd</th><th>Valor unit.</th><th class="r">Subtotal</th></tr></thead><tbody>
+            ${p.itens.length ? p.itens.map((i, n) => `<tr data-n="${n}">
+              <td><select data-prod><option value="">— escolher —</option><option value="__novo__" ${i.produtoId === '__novo__' ? 'selected' : ''}>➕ Cadastrar “${esc(i.desc)}”</option>${Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === i.produtoId ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select><small class="muted">lido: ${esc(i.desc)}</small></td>
+              <td><input data-qtd inputmode="decimal" value="${esc(qtdFmt(i.qtd))}"></td>
+              <td><input data-val inputmode="decimal" value="${dec(i.valor)}"></td>
+              <td class="r strong">${brl(i.qtd * i.valor)}</td></tr>`).join('') : '<tr><td colspan="4" class="muted">Nenhum item lido nesta etiqueta — esta venda não será lançada.</td></tr>'}
+            </tbody></table>
+            <details><summary>ver texto lido do PDF (páginas ${p.paginas.join(', ')})</summary><pre>${esc(p.texto.join('\n\n'))}</pre></details>
+          </div>`).join('') + `<div class="imp-tot" id="impTot"></div>`;
+        total();
+      }
+      function total() {
+        const sel = pedidos.filter(p => p.incluir && p.itens.length);
+        const t = sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0);
+        const el = $('#impTot', body); if (el) el.innerHTML = `${sel.length} venda(s) selecionada(s) · total <b>${brl(t)}</b>`;
+      }
+      res.addEventListener('input', e => {
+        const card = e.target.closest('.imp-ped'); if (!card) return;
+        const p = pedidos[+card.dataset.k];
+        if (e.target.matches('[data-cli]')) p.cliente = e.target.value;
+        const tr = e.target.closest('tr[data-n]');
+        if (tr) { const i = p.itens[+tr.dataset.n]; if (e.target.matches('[data-qtd]')) i.qtd = num(e.target.value); if (e.target.matches('[data-val]')) i.valor = r2(e.target.value); tr.lastElementChild.textContent = brl(i.qtd * i.valor); }
+        total();
+      });
+      res.addEventListener('change', e => {
+        const card = e.target.closest('.imp-ped'); if (!card) return;
+        const p = pedidos[+card.dataset.k];
+        if (e.target.matches('[data-inc]')) { p.incluir = e.target.checked; card.classList.toggle('off', !p.incluir); total(); }
+        if (e.target.matches('[data-prod]')) p.itens[+e.target.closest('tr').dataset.n].produtoId = e.target.value;
+      });
+    },
+    onSubmit: () => {
+      const sel = pedidos.filter(p => p.incluir && p.itens.length);
+      if (!sel.length) { toast(pedidos.length ? 'Selecione pelo menos uma venda' : 'Escolha o PDF das etiquetas', 'err'); return false; }
+      const semProd = sel.find(p => p.itens.some(i => !i.produtoId));
+      if (semProd) { toast(`Escolha o produto de todos os itens (pedido de ${semProd.cliente || 'sem nome'})`, 'err'); return false; }
+      const semCli = sel.find(p => !String(p.cliente || '').trim());
+      if (semCli) { toast('Informe o nome do cliente de todas as vendas selecionadas', 'err'); return false; }
+      const data = $('#impData').value || hoje(), canal = $('#impPlat').value, forma = $('#impForma').value, dias = Math.max(0, Math.floor(num($('#impDias').value)));
+      const pl = plataformaPorNome(canal), pct = num(pl?.comissao);
+      // 1) cadastros novos (produtos e clientes)
+      const cad = [], novosProd = {};
+      sel.forEach(p => p.itens.forEach(i => {
+        if (i.produtoId !== '__novo__') return;
+        const k = norm(i.desc);
+        if (!novosProd[k]) {
+          let n = Store.data.produtos.length + Object.keys(novosProd).length + 1, sku;
+          do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
+          novosProd[k] = { id: uid(), sku, nome: i.desc, categoria: '', unidade: 'un', custo: 0, preco: i.valor, estoqueMin: 0, ean: '', ncm: '', ativo: 'sim', criadoEm: agora(), foto: '' };
+          cad.push(up('produtos', novosProd[k]));
+        }
+        i.produtoId = novosProd[k].id;
+      }));
+      sel.forEach(p => {
+        const nome = p.cliente.trim();
+        let c = Store.data.contatos.find(x => (x.tipo === 'Cliente' || x.tipo === 'Ambos') && norm(x.nome) === norm(nome));
+        if (!c) { c = { id: uid(), tipo: 'Cliente', nome, documento: '', telefone: '', email: '', cidade: p.cidade || '', uf: p.uf || '', cep: p.cep || '', endereco: p.endereco || '', fantasia: '', obs: 'Cadastrado pela importação de etiquetas', criadoEm: agora() }; cad.push(up('contatos', c)); Store.apply([up('contatos', c)]); }
+        p.clienteId = c.id;
+      });
+      if (cad.length) Store.apply(cad);
+      // 2) vendas
+      const ops = [...cad];
+      let numero = proxNumero(Store.data.vendas);
+      for (const p of sel) {
+        const total = r2(p.itens.reduce((s, i) => s + i.qtd * i.valor, 0));
+        const rec = {
+          id: uid(), numero: String(numero++), data, clienteId: p.clienteId, canal, status: 'Atendido',
+          itens: p.itens.map(i => ({ produtoId: i.produtoId, qtd: i.qtd, valor: i.valor })), frete: 0, desconto: 0, total,
+          formaPgto: forma, parcelas: 1, vencimento: addDias(data, dias),
+          obs: ['Importado do PDF de etiquetas', p.pedido && 'Pedido ' + p.pedido, p.rastreio && 'Rastreio ' + p.rastreio].filter(Boolean).join(' · '),
+          criadoEm: agora(), comissaoPct: pct, comissao: r2(total * pct / 100),
+        };
+        const ef = [up('vendas', rec), ...efeitosVenda(rec)];
+        Store.apply(ef); ops.push(...ef);
+      }
+      Store.commit(ops);
+      $('#modal').classList.remove('pdv-modal');
+      toast(`${sel.length} venda(s) lançada(s) — ${brl(sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0))}`, 'ok');
+    },
+  });
+}
 
 /* =========================================================
    COMPRA DE INSUMOS (embalagens e materiais de envio)

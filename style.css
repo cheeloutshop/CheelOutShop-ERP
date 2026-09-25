@@ -478,3 +478,25 @@ td.c-foto { width: 56px; }
   .pdv-bottom { grid-template-columns: 1fr; }
 }
 .pdv-total > span b { color: var(--red); }
+
+/* ---------- v15: importar etiquetas ---------- */
+.imp-drop { border: 2px dashed #B9C9EE; border-radius: 14px; background: #F5F8FF; padding: 22px; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; transition: background .15s, border-color .15s; }
+.imp-drop.on { background: #EAF1FF; border-color: var(--blue-500); }
+.imp-drop b { color: var(--blue-800); font-size: 16px; }
+.imp-drop .muted { font-size: 13px; font-weight: 700; }
+.imp-ico { font-size: 30px; }
+.imp-ped { border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; background: #fff; }
+.imp-ped.off { opacity: .5; }
+.imp-head { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+.imp-head .check { margin-bottom: 10px; }
+.imp-meta { font-size: 12.5px; font-weight: 700; color: var(--ink-2); min-width: 170px; }
+.imp-itens { width: 100%; }
+.imp-itens th, .imp-itens td { padding: 6px 6px; }
+.imp-itens select { min-width: 240px; }
+.imp-itens small { display: block; font-size: 11.5px; margin-top: 3px; }
+.imp-itens input { max-width: 110px; }
+.imp-ped details { margin-top: 6px; }
+.imp-ped summary { cursor: pointer; font-size: 12.5px; font-weight: 800; color: var(--blue-600); }
+.imp-ped pre { white-space: pre-wrap; font-size: 11.5px; background: #F7F9FC; border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; }
+.imp-tot { text-align: right; font-weight: 800; color: var(--ink-2); margin-top: 6px; }
+.imp-tot b { font-size: 18px; color: var(--blue-800); }
