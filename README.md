@@ -91,6 +91,14 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Compra de insumos** (menu Compras): embalagens e materiais de envio; gera contas a pagar, não mexe no estoque de produtos.
 - **Atualize o script da planilha e rode `setup`** (cria as abas `insumos` e `plataformas`, as colunas novas e a pasta de fotos).
 
+
+## v17 — Jamble e custos
+
+- Clientes com **Nick na Jamble** (@usuário); a importação preenche e reconhece o cliente pelo nick.
+- Importação do PDF: **sempre plataforma Jamble**. Produto com nome igual (ou já confirmado antes) = venda confirmada; nome parecido ou sem cadastro = **venda Pendente** (não baixa estoque nem lança a receber) até você confirmar em Vendas › Confirmar. Os nomes confirmados passam a ser reconhecidos nas próximas importações.
+- Pedido de compra: mostra o **último custo** de cada produto e se o custo do pedido está acima ou abaixo. O **frete é rateado** pelo valor de cada item e entra no custo do produto; não soma no total do pedido.
+- **Atualize o script da planilha e rode `setup`** (colunas `nick` em contatos e `apelidos` em produtos).
+
 ## Como os dados se ligam
 
 ```

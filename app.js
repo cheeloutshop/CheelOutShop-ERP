@@ -5,8 +5,8 @@
 'use strict';
 
 const COLS = {
-  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto'],
-  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco'],
+  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos'],
+  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
   compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
   vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'comissaoPct', 'comissao'],
@@ -16,7 +16,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '15';
+const APP_VERSAO = '17';
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -30,7 +30,7 @@ const EMAIL_PADRAO = String(ERP.email || 'cheeloutshop@gmail.com').trim().toLowe
 const CANAIS = ['Loja física', 'Site', 'Mercado Livre', 'Shopee', 'Amazon', 'TikTok Shop', 'Instagram / WhatsApp', 'Outro'];
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência', 'Marketplace'];
 const A_VISTA = ['Pix', 'Dinheiro', 'Cartão de débito'];
-const ST_VENDA = ['Orçamento', 'Em aberto', 'Atendido', 'Cancelado'];
+const ST_VENDA = ['Pendente', 'Orçamento', 'Em aberto', 'Atendido', 'Cancelado'];
 const ST_COMPRA = ['Em aberto', 'Recebido', 'Cancelado'];
 const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];   // Pix = à vista; os demais podem parcelar
 const UN_COMPRA = [['UN', 'Unidade'], ['CX', 'Caixa'], ['FD', 'Fardo'], ['PCT', 'Pacote'], ['DZ', 'Dúzia'], ['KIT', 'Kit'], ['PAR', 'Par'], ['OUTRA', 'Outra']];
@@ -304,11 +304,12 @@ function efeitosVenda(v) {
     }
     if (!temPago) {
       recs.forEach(r => ops.push(del('receber', r.id)));
-      const parc = gerarParcelas(num(v.total), v.parcelas, v.vencimento || v.data);
+      const liquido = v.formaPgto === 'Repasse da plataforma' ? r2(num(v.total) - num(v.comissao)) : num(v.total);
+      const parc = gerarParcelas(liquido, v.parcelas, v.vencimento || v.data);
       const aVista = A_VISTA.includes(v.formaPgto) && parc.length === 1;
       for (const p of parc) {
         ops.push(up('receber', {
-          id: uid(), descricao: `Venda nº ${v.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : ''),
+          id: uid(), descricao: `Venda nº ${v.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (v.formaPgto === 'Repasse da plataforma' ? ` · repasse ${v.canal || 'plataforma'} (líquido)` : ''),
           contatoId: v.clienteId, categoria: 'Vendas', vencimento: p.vencimento, valor: p.valor,
           status: aVista ? 'Pago' : 'Aberto', pagoEm: aVista ? v.data : '', valorPago: aVista ? p.valor : '',
           origem: 'venda', origemId: v.id, obs: v.formaPgto || '', criadoEm: agora(),
@@ -322,6 +323,22 @@ function efeitosVenda(v) {
 }
 
 /* Efeitos de uma compra: movimentos de entrada + contas a pagar + atualiza custo */
+/* Custo unitário de cada item já com o frete rateado pelo valor de cada item (o frete não entra no total do pedido) */
+function custosComFrete(itens, frete) {
+  const subs = itens.map(i => num(i.qtd) * num(i.valor)), soma = subs.reduce((a, b) => a + b, 0);
+  return itens.map((i, k) => {
+    const f = fatorItem(i), un = num(i.qtd) * f, parte = soma ? num(frete) * subs[k] / soma : 0;
+    return { unidades: un, frete: parte, custoUn: un ? (subs[k] + parte) / un : 0 };
+  });
+}
+/* Último custo pago pelo produto (última entrada de compra; se não houver, o custo do cadastro) */
+function ultimoCusto(produtoId, ignorarOrigemId) {
+  const m = Store.data.movimentos.filter(x => x.produtoId === produtoId && x.origem === 'compra' && x.tipo === 'entrada' && x.origemId !== ignorarOrigemId && num(x.custoUnit) > 0)
+    .sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0];
+  if (m) return num(m.custoUnit);
+  const p = produto(produtoId); return p ? num(p.custo) : 0;
+}
+
 /* Efeitos de um pedido de compra:
    - contas a pagar: lançadas já na criação do pedido (pré-venda: boleto vence antes da mercadoria chegar)
    - estoque: entra só quando o pedido é RECEBIDO, sempre em unidades (qtd × unidades por embalagem)
@@ -330,12 +347,13 @@ function efeitosCompra(c) {
   const ops = [];
   Store.data.movimentos.filter(m => m.origem === 'compra' && m.origemId === c.id).forEach(m => ops.push(del('movimentos', m.id)));
   if (c.status === 'Recebido') {
-    for (const it of c.itens) {
-      const f = fatorItem(it), qtdUn = num(it.qtd) * f, custoUn = f ? num(it.valor) / f : num(it.valor);
+    const custos = custosComFrete(c.itens, c.frete);
+    for (const [k, it] of c.itens.entries()) {
+      const f = fatorItem(it), qtdUn = num(it.qtd) * f, custoUn = custos[k].custoUn;
       ops.push(up('movimentos', {
         id: uid(), data: c.recebidoEm || hoje(), produtoId: it.produtoId, tipo: 'entrada', quantidade: qtdUn,
         custoUnit: Math.round(custoUn * 1e4) / 1e4, origem: 'compra', origemId: c.id,
-        obs: 'Pedido de compra nº ' + c.numero + (f > 1 ? ` (${qtdFmt(it.qtd)} ${it.un} × ${f} un)` : ''), criadoEm: agora(),
+        obs: 'Pedido de compra nº ' + c.numero + (f > 1 ? ` (${qtdFmt(it.qtd)} ${it.un} × ${f} un)` : '') + (custos[k].frete ? ` · frete rateado ${brl(custos[k].frete)}` : ''), criadoEm: agora(),
       }));
       const p = produto(it.produtoId);
       const c4 = Math.round(custoUn * 1e4) / 1e4;
@@ -769,7 +787,14 @@ function formBalanco() {
 /* =========================================================
    VENDAS & COMPRAS (pedidos com itens)
    ========================================================= */
-function badgeVenda(s) { return `<span class="badge ${{ 'Atendido': 'green', 'Recebido': 'green', 'Cancelado': 'gray', 'Orçamento': 'amber' }[s] || ''}">${esc(s)}</span>`; }
+function badgeVenda(s) { return `<span class="badge ${{ 'Atendido': 'green', 'Recebido': 'green', 'Cancelado': 'gray', 'Orçamento': 'amber', 'Pendente': 'red' }[s] || ''}">${esc(s)}</span>`; }
+const itemNome = i => i.produtoId && produto(i.produtoId) ? produto(i.produtoId).nome : (i.descricao || '(sem produto)');
+const apelidosDe = p => String(p?.apelidos || '').split(' || ').map(s => s.trim()).filter(Boolean);
+function comApelido(p, nome) {
+  const n = String(nome || '').trim();
+  if (!p || !n || norm(n) === norm(p.nome) || apelidosDe(p).some(a => norm(a) === norm(n))) return null;
+  return { ...p, apelidos: [...apelidosDe(p), n].join(' || ') };
+}
 
 function viewPedidos(el, tipo) {
   const V = tipo === 'vendas';
@@ -781,12 +806,13 @@ function viewPedidos(el, tipo) {
   const lista = Store.data[tipo]
     .filter(p => !st || p.status === st)
     .filter(p => !mes || (p.data || '').startsWith(mes))
-    .filter(p => match(q, p.numero, nomeContato(V ? p.clienteId : p.fornecedorId), p.canal, p.obs, ...p.itens.map(i => nomeProduto(i.produtoId))))
+    .filter(p => match(q, p.numero, nomeContato(V ? p.clienteId : p.fornecedorId), p.canal, p.obs, ...p.itens.map(itemNome), nomeContato(V ? p.clienteId : p.fornecedorId) && contato(p.clienteId)?.nick))
     .sort((a, b) => (b.data || '').localeCompare(a.data || '') || num(b.numero) - num(a.numero));
   const tot = lista.filter(p => p.status !== 'Cancelado').reduce((s, p) => s + num(p.total), 0);
   const porPlat = {};
   if (V) lista.filter(p => p.status !== 'Cancelado').forEach(p => { const k = p.canal || 'Sem plataforma'; porPlat[k] = porPlat[k] || { n: 0, t: 0, c: 0 }; porPlat[k].n++; porPlat[k].t += num(p.total); porPlat[k].c += num(p.comissao); });
   el.innerHTML = `
+    ${V && Store.data.vendas.some(v => v.status === 'Pendente') && st !== 'Pendente' ? `<div class="note warn pend-bar"><span><b>${Store.data.vendas.filter(v => v.status === 'Pendente').length} venda(s) pendente(s)</b> de confirmação de produto (importadas do PDF da Jamble). Elas ainda não baixaram o estoque nem lançaram o valor a receber.</span><button class="btn accent sm" id="verPend">Ver pendentes</button></div>` : ''}
     ${V && Object.keys(porPlat).length ? `<div class="plat-resumo">${Object.entries(porPlat).sort((a, b) => b[1].t - a[1].t).map(([k, s]) => `<div class="card"><div class="lbl">${esc(k)}</div><b>${brl(s.t)}</b><small>${s.n} venda(s) · comissão <span class="${s.c ? 'neg' : ''}">${brl(s.c)}</span></small></div>`).join('')}</div>` : ''}
     <div class="toolbar">
       ${searchBox('q' + key, q, V ? 'Buscar por nº, cliente, produto…' : 'Buscar por nº, fornecedor, produto…')}
@@ -803,7 +829,8 @@ function viewPedidos(el, tipo) {
         <td class="muted">${esc(p.formaPgto)}${num(p.parcelas) > 1 ? ` · ${p.parcelas}x` : ''}</td>
         <td class="r strong">${brl(p.total)}</td>${V ? `<td class="r muted">${num(p.comissao) ? brl(p.comissao) : '—'}</td>` : ''}<td>${badgeVenda(p.status)}</td>
         <td class="act"><span class="inner">
-          ${V && p.status !== 'Atendido' && p.status !== 'Cancelado' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Baixa no estoque e gera contas a receber">${ICON.check}Faturar</button>` : ''}
+          ${V && p.status === 'Pendente' ? `<button class="btn accent sm" data-conf="${p.id}" title="Confirmar os produtos desta venda">${ICON.check}Confirmar</button>` : ''}
+          ${V && p.status !== 'Atendido' && p.status !== 'Cancelado' && p.status !== 'Pendente' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Baixa no estoque e gera contas a receber">${ICON.check}Faturar</button>` : ''}
           ${!V && p.status === 'Em aberto' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Dar entrada da mercadoria no estoque">${ICON.check}Receber</button>` : ''}
           <button class="icon-btn" data-print="${p.id}" title="Imprimir">${ICON.print}</button>
           <button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button>
@@ -817,7 +844,9 @@ function viewPedidos(el, tipo) {
   const find = id => Store.data[tipo].find(p => p.id === id);
   $('#novoPed').onclick = () => (V ? formVenda() : formCompra());
   if (V) $('#impEtq').onclick = abrirImportarEtiquetas;
-  $$('[data-edit]', el).forEach(b => b.onclick = () => (V ? formVenda(find(b.dataset.edit)) : formCompra(find(b.dataset.edit))));
+  $$('[data-edit]', el).forEach(b => b.onclick = () => { const x = find(b.dataset.edit); if (V && x.status === 'Pendente') formConfirmarVenda(x); else (V ? formVenda(x) : formCompra(x)); });
+  $$('[data-conf]', el).forEach(b => b.onclick = () => formConfirmarVenda(find(b.dataset.conf)));
+  const bp = $('#verPend', el); if (bp) bp.onclick = () => { UI['st' + key] = 'Pendente'; render(); };
   $$('[data-print]', el).forEach(b => b.onclick = () => imprimirPedido(tipo, find(b.dataset.print)));
   $$('[data-fat]', el).forEach(b => b.onclick = () => {
     const p = find(b.dataset.fat);
@@ -1173,10 +1202,12 @@ function ligarMarkup(custo, markup, preco) {
 }
 
 /* Campos de cadastro de pessoa (usados no cadastro rápido e no cadastro completo) */
-function camposPessoa(pref, c = {}) {
+const limpaNick = s => String(s || '').trim().replace(/^@+/, '').replace(/\s+/g, '');
+function camposPessoa(pref, c = {}, opts = {}) {
   const a = k => `data-${pref}="${k}"`;
   return `
     <div class="grid g4">
+      ${opts.nick ? `<label class="f span2">Nick na Jamble<div class="nick-in"><span>@</span><input ${a('nick')} autocomplete="off" value="${esc(c.nick || '')}" placeholder="usuário na Jamble"></div></label><div class="span2"></div>` : ''}
       <label class="f span2">CPF ou CNPJ<input ${a('documento')} inputmode="numeric" autocomplete="off" value="${esc(c.documento || '')}" placeholder="Só números — o tipo é identificado sozinho"><span class="doc-status" ${a('docStatus')}></span></label>
       ${field('Nome / razão social *', `<input ${a('nome')} autocomplete="off" value="${esc(c.nome || '')}">`, 'span2')}
       ${field('Nome fantasia', `<input ${a('fantasia')} autocomplete="off" value="${esc(c.fantasia || '')}">`, 'span2')}
@@ -1190,7 +1221,7 @@ function camposPessoa(pref, c = {}) {
 }
 function lerPessoa(root, pref) {
   const g = k => ($(`[data-${pref}="${k}"]`, root)?.value || '').trim();
-  return { documento: fmtDoc(g('documento')), nome: g('nome'), fantasia: g('fantasia'), telefone: g('telefone'), email: g('email'), cep: g('cep'), endereco: g('endereco'), cidade: g('cidade'), uf: g('uf').toUpperCase() };
+  return { nick: limpaNick(g('nick')), documento: fmtDoc(g('documento')), nome: g('nome'), fantasia: g('fantasia'), telefone: g('telefone'), email: g('email'), cep: g('cep'), endereco: g('endereco'), cidade: g('cidade'), uf: g('uf').toUpperCase() };
 }
 
 /* Campo de busca de fornecedor: sugestões a partir de 3 letras + opção de cadastrar */
@@ -1205,11 +1236,12 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
   const abrir = () => {
     const q = txt.value.trim(), d = soDig(q);
     if (q.length < 3) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 3 letras do nome (ou números do CNPJ/CPF)…</div>'; list.hidden = false; return; }
-    const r = lista().filter(c => match(q, c.nome, c.fantasia) || (d.length >= 3 && soDig(c.documento).includes(d)))
+    const qn = limpaNick(q).toLowerCase();
+    const r = lista().filter(c => match(q, c.nome, c.fantasia) || (c.nick && qn.length >= 3 && String(c.nick).toLowerCase().includes(qn)) || (d.length >= 3 && soDig(c.documento).includes(d)))
       .sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 8);
     itens = [...r.map(c => ({ c })), { novo: true }];
     list.innerHTML = (r.length ? '' : `<div class="ac-hint">Nenhum ${rotulo} encontrado.</div>`)
-      + r.map((c, i) => `<div class="ac-item" data-k="${i}"><b>${esc(c.nome)}</b><small>${esc([c.fantasia, c.documento, c.cidade && c.cidade + (c.uf ? '/' + c.uf : '')].filter(Boolean).join(' · '))}</small></div>`).join('')
+      + r.map((c, i) => `<div class="ac-item" data-k="${i}"><b>${esc(c.nome)}</b><small>${esc([c.nick && '@' + c.nick, c.fantasia, c.documento, c.cidade && c.cidade + (c.uf ? '/' + c.uf : '')].filter(Boolean).join(' · '))}</small></div>`).join('')
       + `<div class="ac-item ac-novo" data-k="${r.length}">➕ Cadastrar novo ${rotulo}${q ? ` “${esc(q)}”` : ''}</div>`;
     ativo = 0; marcar(); list.hidden = false;
   };
@@ -1235,7 +1267,7 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
 function itemRowCompra(it) {
   const un = it.un || 'UN', emb = un !== 'UN';
   return `<tr>
-    <td class="c-prod"><select data-i="prod">${prodOptionsPedido(it.produtoId)}</select></td>
+    <td class="c-prod"><select data-i="prod">${prodOptionsPedido(it.produtoId)}</select><small data-i="ult" class="ult-custo"></small></td>
     <td class="c-un"><select data-i="un" title="Como vem na compra">${opt(UN_COMPRA, un)}</select></td>
     <td class="c-fat"><input data-i="fator" inputmode="numeric" value="${emb ? esc(it.fator || '') : ''}" placeholder="${emb ? 'ex.: 12' : '—'}" ${emb ? '' : 'disabled'} title="Quantas unidades vêm em cada embalagem"></td>
     <td class="c-qtd"><input data-i="qtd" inputmode="decimal" value="${esc(it.qtd ?? 1)}"></td>
@@ -1294,9 +1326,9 @@ function formCompra(p) {
         <div class="inline-actions"><button type="button" class="btn ghost sm" data-np-cancel>Cancelar</button><button type="button" class="btn primary sm" data-np-save>Salvar produto e usar no item</button></div>
       </div>
       <div class="grid g4" style="margin-top:14px">
-        ${field('Frete (R$)', inp('frete', dec(p.frete), 'inputmode="decimal" placeholder="0,00" id="pedFrete"'))}
+        ${field('Frete (R$) — rateado no custo', inp('frete', dec(p.frete), 'inputmode="decimal" placeholder="0,00" id="pedFrete"'))}
         ${field('Desconto (R$)', inp('desconto', dec(p.desconto), 'inputmode="decimal" placeholder="0,00" id="pedDesc"'))}
-        <div class="span2 totals" style="align-items:end;margin:0"><span>Produtos: <span id="tProd">R$ 0,00</span></span><span>Total: <b id="tTotal">R$ 0,00</b></span></div>
+        <div class="span2 totals" style="align-items:end;margin:0"><span>Produtos: <span id="tProd">R$ 0,00</span></span><span>Total do pedido: <b id="tTotal">R$ 0,00</b></span></div>
       </div>
       <div class="section-t">Pagamento</div>
       <div class="grid g4">
@@ -1306,21 +1338,43 @@ function formCompra(p) {
         <div class="f" style="justify-content:end"><span class="muted" id="pgResumo" style="font-size:13px;font-weight:800"></span></div>
       </div>
       ${field('Observações', `<textarea name="obs">${esc(p.obs)}</textarea>`, '')}
-      <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado.</div>`,
+      <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado <b>já com o frete rateado</b> (proporcional ao valor de cada item). O frete não soma no total do pedido.</div>`,
     onOpen: body => {
       const tb = $('#itensBody', body);
       const recalc = () => {
         let s = 0, un = 0;
-        $$('tr', tb).forEach(tr => {
+        const rows = $$('tr', tb).map(tr => {
           const q = num($('[data-i=qtd]', tr).value), v = num($('[data-i=valor]', tr).value);
           const u = $('[data-i=un]', tr).value, f = u === 'UN' ? 1 : Math.max(0, num($('[data-i=fator]', tr).value));
+          return { tr, q, v, u, f, it: { qtd: q, valor: v, un: u, fator: f } };
+        });
+        const frete = num($('#pedFrete').value);
+        const custos = custosComFrete(rows.map(r => r.it), frete);
+        rows.forEach(({ tr, q, v, u, f }, k) => {
           s += q * v; un += q * (f || 0);
           $('[data-i=sub]', tr).textContent = brl(q * v);
-          $('[data-i=eq]', tr).textContent = u === 'UN' ? '' : (f ? `= ${qtdFmt(q * f)} un · ${brl(f ? v / f : 0)}/un` : 'informe unid. por emb.');
+          const cu = custos[k].custoUn;
+          const partes = [];
+          if (u !== 'UN') partes.push(f ? `= ${qtdFmt(q * f)} un` : 'informe unid. por emb.');
+          if (q && v && f) partes.push(`${brl(cu)}/un${frete ? ' c/ frete' : ''}`);
+          $('[data-i=eq]', tr).textContent = partes.join(' · ');
           $('[data-i=eq]', tr).classList.toggle('neg', u !== 'UN' && !f);
+          // último custo x custo deste pedido
+          const pid = $('[data-i=prod]', tr).value, ult = $('[data-i=ult]', tr);
+          if (pid && pid !== NOVO_PROD) {
+            const uc = ultimoCusto(pid, p.id);
+            if (!uc) { ult.innerHTML = 'Último custo: <b>sem histórico</b>'; ult.className = 'ult-custo'; }
+            else if (!(q && v && f)) { ult.innerHTML = `Último custo: <b>${brl(uc)}/un</b>`; ult.className = 'ult-custo'; }
+            else {
+              const dif = (cu - uc) / uc * 100;
+              const igual = Math.abs(dif) < 0.5;
+              ult.innerHTML = `Último custo: <b>${brl(uc)}/un</b> · ${igual ? '= igual' : (dif > 0 ? '▲ ' : '▼ ') + fmtPct(Math.abs(dif)) + '% ' + (dif > 0 ? 'acima' : 'abaixo')}`;
+              ult.className = 'ult-custo ' + (igual ? '' : dif > 0 ? 'acima' : 'abaixo');
+            }
+          } else { ult.textContent = ''; ult.className = 'ult-custo'; }
         });
         $('#tProd').textContent = brl(s);
-        const total = s + num($('#pedFrete').value) - num($('#pedDesc').value);
+        const total = s - num($('#pedDesc').value);   // o frete NÃO entra no total do pedido (vai para o custo dos produtos)
         $('#tTotal').textContent = brl(total);
         $('#eqTotal').textContent = un ? `Entrada no estoque: ${qtdFmt(un)} unidade(s)` : '';
         const pix = $('#pgForma').value === 'Pix';
@@ -1421,7 +1475,7 @@ function formCompra(p) {
       if (!linhas.length) { toast('Adicione pelo menos um item com produto e quantidade', 'err'); return false; }
       const semFator = linhas.find(i => i.un !== 'UN' && !(i.fator > 0));
       if (semFator) { toast(`Informe quantas unidades vêm em cada ${UN_COMPRA.find(u => u[0] === semFator.un)[1].toLowerCase()} de “${nomeProduto(semFator.produtoId)}”`, 'err'); return false; }
-      const total = r2(totalItens(linhas) + num(fd.frete) - num(fd.desconto));
+      const total = r2(totalItens(linhas) - num(fd.desconto));   // frete fica fora do total: é rateado no custo dos produtos
       const formaPgto = fd.formaPgto || 'Boleto';
       const rec = {
         id: p.id || uid(),
@@ -1451,7 +1505,7 @@ function imprimirPedido(tipo, p) {
   <div class="head"><img src="${new URL('logo.png', location.href)}"><div style="text-align:right"><h1>${V ? 'Pedido de venda' : 'Pedido de compra'} nº ${esc(p.numero)}</h1><div>Data: ${dataBR(p.data)} · Situação: ${esc(p.status)}</div></div></div>
   <p><b>${V ? 'Cliente' : 'Fornecedor'}:</b> ${esc(c?.nome || (V ? 'Consumidor final' : ''))}${c?.documento ? ' · ' + esc(c.documento) : ''}${c?.telefone ? ' · ' + esc(c.telefone) : ''}${c?.email ? ' · ' + esc(c.email) : ''}${c?.cidade ? '<br>' + esc(c.cidade) + (c.uf ? '/' + esc(c.uf) : '') : ''}</p>
   <table><thead><tr><th>Produto</th><th class="r">Qtd</th><th class="r">Unitário</th><th class="r">Subtotal</th></tr></thead><tbody>
-  ${p.itens.map(i => `<tr><td>${esc(produto(i.produtoId)?.sku || '')} ${esc(nomeProduto(i.produtoId))}${!V && i.un && i.un !== 'UN' ? ` <small>(${esc(i.un)} c/ ${esc(i.fator)} un)</small>` : ''}</td><td class="r">${qtdFmt(i.qtd)}${!V && i.un && i.un !== 'UN' ? ' ' + esc(i.un) : ''}</td><td class="r">${brl(i.valor)}</td><td class="r">${brl(num(i.qtd) * num(i.valor))}</td></tr>`).join('')}
+  ${p.itens.map(i => `<tr><td>${esc(produto(i.produtoId)?.sku || '')} ${esc(itemNome(i))}${!V && i.un && i.un !== 'UN' ? ` <small>(${esc(i.un)} c/ ${esc(i.fator)} un)</small>` : ''}</td><td class="r">${qtdFmt(i.qtd)}${!V && i.un && i.un !== 'UN' ? ' ' + esc(i.un) : ''}</td><td class="r">${brl(i.valor)}</td><td class="r">${brl(num(i.qtd) * num(i.valor))}</td></tr>`).join('')}
   </tbody></table>
   <div class="tot">Produtos: ${brl(totalItens(p.itens))}<br>Frete: ${brl(p.frete)} · Desconto: ${brl(p.desconto)}<br><b>Total: ${brl(p.total)}</b></div>
   <p><b>Pagamento:</b> ${esc(p.formaPgto)} · ${esc(p.parcelas)}x · 1º venc. ${dataBR(p.vencimento)}</p>
@@ -1582,7 +1636,7 @@ function viewContatos(el, tipo) {
   actions(`<button class="btn accent" id="novoCont">${ICON.plus}${F ? 'Novo fornecedor' : 'Novo cliente'}</button>`);
   const q = UI['q' + k] || '';
   const lista = Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos')
-    .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade)).sort((a, b) => a.nome.localeCompare(b.nome));
+    .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade, c.nick && '@' + c.nick)).sort((a, b) => a.nome.localeCompare(b.nome));
   // resumo de movimento por contato
   const mov = {};
   (F ? Store.data.compras : Store.data.vendas).filter(p => p.status !== 'Cancelado').forEach(p => {
@@ -1590,11 +1644,11 @@ function viewContatos(el, tipo) {
     mov[id] = mov[id] || { n: 0, t: 0, ult: '' }; mov[id].n++; mov[id].t += num(p.total); if ((p.data || '') > mov[id].ult) mov[id].ult = p.data;
   });
   el.innerHTML = `
-    <div class="toolbar">${searchBox('q' + k, q, 'Buscar por nome, CPF/CNPJ, e-mail, telefone…')}</div>
+    <div class="toolbar">${searchBox('q' + k, q, F ? 'Buscar por nome, CPF/CNPJ, e-mail, telefone…' : 'Buscar por nome, @nick, CPF, e-mail, telefone…')}</div>
     <div class="table-wrap"><table>
       <thead><tr><th>Nome</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th class="r">${F ? 'Compras' : 'Vendas'}</th><th class="r">Total</th><th>Última</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(c => { const m = mov[c.id] || { n: 0, t: 0, ult: '' }; return `<tr>
-        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
+        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.nick ? `<br><span class="nick">@${esc(c.nick)}</span>` : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
         <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
@@ -1620,12 +1674,15 @@ function formContato(c, tipo = 'Cliente') {
     title: novo ? 'Novo ' + nomeTipo : 'Editar ' + nomeTipo,
     body: `
       <input type="hidden" name="tipo" value="${esc(c.tipo)}">
-      ${camposPessoa('pc', c)}
+      ${camposPessoa('pc', c, { nick: c.tipo !== 'Fornecedor' })}
       <div style="margin-top:14px">${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`)}</div>`,
     onOpen: body => ligarDocumento($('[data-pc=documento]', body), $('[data-pc=docStatus]', body), k => $(`[data-pc=${k}]`, body), c.id),
     onSubmit: (fd, body) => {
       const d = lerPessoa(body, 'pc');
       if (!d.nome) { toast('Informe o nome ou a razão social', 'err'); $('[data-pc=nome]', body).focus(); return false; }
+      if (c.tipo === 'Fornecedor') delete d.nick;
+      const nickDup = d.nick && Store.data.contatos.find(x => x.id !== c.id && limpaNick(x.nick).toLowerCase() === d.nick.toLowerCase());
+      if (nickDup) { toast(`O nick @${d.nick} já está no cadastro de ${nickDup.nome}`, 'err'); return false; }
       const t = tipoDoc(d.documento);
       if (t === 'cpf-invalido' || t === 'cnpj-invalido') { toast('CPF/CNPJ inválido — confira os números', 'err'); return false; }
       Store.commit([up('contatos', { ...c, ...d, id: c.id || uid(), tipo: fd.tipo, obs: fd.obs, criadoEm: c.criadoEm || agora() })]);
@@ -1698,7 +1755,7 @@ function campoFoto(box, inicial, nomeFn) {
    ========================================================= */
 const PLAT_PADRAO = [
   { id: 'pl-whatsapp', nome: 'WhatsApp', comissao: 0, ativo: 'sim' },
-  { id: 'pl-jamble', nome: 'Jamble', comissao: 0, ativo: 'sim' },
+  { id: 'pl-jamble', nome: 'Jamble', comissao: 10, ativo: 'sim' },
   { id: 'pl-retirada', nome: 'Retirada', comissao: 0, ativo: 'sim' },
 ];
 const plataformas = () => (Store.data.plataformas && Store.data.plataformas.length ? Store.data.plataformas : PLAT_PADRAO).slice().sort((a, b) => a.nome.localeCompare(b.nome));
@@ -1713,7 +1770,7 @@ function garantirPlataformas() {
 /* =========================================================
    FRENTE DE CAIXA (nova venda)
    ========================================================= */
-const FORMAS_VENDA = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência'];
+const FORMAS_VENDA = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência', 'Repasse da plataforma'];
 
 function produtoPicker(wrap, onEscolher, onNovo) {
   const txt = $('.ac-txt', wrap), list = $('.ac-list', wrap);
@@ -1773,7 +1830,7 @@ function abrirPDV(v) {
         ${field('Data', inp('data', v.data, 'type="date" required'))}
         <label class="f">Cliente
           <div class="ac" id="acCli">
-            <input class="ac-txt" autocomplete="off" placeholder="Digite 3 letras do nome…" value="${esc(cli?.nome || '')}">
+            <input class="ac-txt" autocomplete="off" placeholder="Digite 3 letras do nome ou o @nick…" value="${esc(cli?.nome || '')}">
             <input type="hidden" name="contatoId" value="${esc(v.clienteId || '')}">
             <div class="ac-list" hidden></div>
           </div>
@@ -1782,7 +1839,7 @@ function abrirPDV(v) {
       </div>
       <div class="inline-new" id="pnlCli" hidden>
         <div class="inline-head"><b>Novo cliente</b><span class="muted">cadastro rápido — já fica selecionado nesta venda</span></div>
-        ${camposPessoa('nc')}
+        ${camposPessoa('nc', {}, { nick: true })}
         <div class="inline-actions"><button type="button" class="btn ghost sm" data-nc-cancel>Cancelar</button><button type="button" class="btn primary sm" data-nc-save>Salvar cliente</button></div>
       </div>
 
@@ -1887,7 +1944,8 @@ function abrirPDV(v) {
       const pnlC = $('#pnlCli', body);
       const pickCli = fornecedorPicker($('#acCli', body), texto => {
         $$('[data-nc]', pnlC).forEach(i => { if (i.tagName === 'INPUT') i.value = ''; });
-        if (soDig(texto).length >= 3 && /\d{3,}/.test(texto)) $('[data-nc=documento]', pnlC).value = texto; else $('[data-nc=nome]', pnlC).value = texto;
+        if (texto.startsWith('@')) $('[data-nc=nick]', pnlC).value = limpaNick(texto);
+        else if (soDig(texto).length >= 3 && /\d{3,}/.test(texto)) $('[data-nc=documento]', pnlC).value = texto; else $('[data-nc=nome]', pnlC).value = texto;
         pnlC.hidden = false;
         ligarDocumento($('[data-nc=documento]', pnlC), $('[data-nc=docStatus]', pnlC), k => $(`[data-nc=${k}]`, pnlC));
         setTimeout(() => $('[data-nc=nome]', pnlC).focus(), 50);
@@ -1992,7 +2050,7 @@ async function lerPaginasPDF(file, progresso) {
     progresso && progresso(n, pdf.numPages);
     const page = await pdf.getPage(n);
     const tc = await page.getTextContent();
-    const itens = tc.items.filter(i => i.str && i.str.trim()).map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5], w: i.width || 0 }));
+    const itens = tc.items.map(i => ({ s: String(i.str || '').replace(/[\u0000-\u001f\u007f﻿]/g, ' '), x: i.transform[4], y: i.transform[5], w: i.width || 0 })).filter(i => i.s.trim());
     itens.sort((a, b) => b.y - a.y || a.x - b.x);
     const linhas = [];
     for (const it of itens) {
@@ -2078,23 +2136,107 @@ function agruparPedidos(paginas) {
   }
   return pedidos.filter(p => p.cliente || p.itens.length);
 }
-/* Encontra o produto cadastrado mais parecido com a descrição lida */
+
+/* ---------- Formato Jamble: resumo da live + romaneio por comprador + DACE ---------- */
+const limpa = s => String(s || '').replace(/[\u0000-\u001f\u007f​-‏﻿]/g, ' ').replace(/[\s  - ]+/g, ' ').trim();
+function ehJamble(paginas) { const t = paginas.slice(0, 4).flat().join(' '); return /Após taxas/i.test(t) && /@\S+\s+#\d+/.test(t); }
+function analisarJamble(paginas) {
+  const resumo = {};
+  const t1 = paginas[0].map(limpa).join('\n');
+  const m1 = t1.match(/R\$\s*([\d.,]+)\s*R\$\s*([\d.,]+)/);
+  if (m1 && /após taxas/i.test(t1)) { resumo.bruto = valorBR(m1[1]); resumo.liq = valorBR(m1[2]); }
+  const mi = t1.match(/(\d+)\s*\/\s*(\d+)/); if (mi) resumo.itens = +mi[1];
+  const peds = {}, ordem = [];
+  let cur = null;
+  paginas.forEach((pg, idx) => {
+    const ls = pg.map(limpa).filter(Boolean);
+    const hi = ls.findIndex(l => /^@\S+\s+#\d+/.test(l));
+    if (hi >= 0) {
+      const m = ls[hi].match(/^@(\S+)\s+#(\d+)/);
+      const n = m[2];
+      if (!peds[n]) { peds[n] = { num: n, handle: m[1], cliente: limpa((ls[hi + 1] || '').split('|')[0]), lotes: [], paginas: [], texto: [] }; ordem.push(n); }
+      cur = peds[n];
+      let lote = null;
+      for (let k = hi + 2; k < ls.length; k++) {
+        const l = ls[k];
+        const pm = l.match(/R\$\s*([\d.,]+)\s*\(\s*Após taxas:?\s*R\$\s*([\d.,]+)/i);
+        if (pm) { lote = { bruto: valorBR(pm[1]), liq: valorBR(pm[2]), jmb: (l.match(/JMB-[A-Z0-9]+/) || [])[0] || '', desc: [] }; cur.lotes.push(lote); continue; }
+        if (!lote) continue;
+        if (/^v[íi]deo$/i.test(l)) { lote = null; continue; }
+        lote.desc.push(l);
+      }
+    } else if (cur) {
+      const txt = ls.join('\n');
+      const iD = txt.search(/DESTINAT[AÁ]RIO/i);
+      if (iD >= 0) {
+        const bloco = txt.slice(iD, txt.search(/MARKETPLACE|PRODUTOS/i) > iD ? txt.search(/MARKETPLACE|PRODUTOS/i) : undefined);
+        const bl = bloco.split('\n');
+        const iNome = bl.findIndex(l => /^Nome\b/i.test(l));
+        if (iNome >= 0 && bl[iNome + 1]) {
+          const [nome, cpf] = bl[iNome + 1].split('|').map(limpa);
+          cur.clienteDace = nome; cur.cpf = (cpf || '').match(/[\d.\-\/]{11,}/) ? cpf : '';
+        }
+        const me = bloco.replace(/\n(?!CEP)/g, ' ').match(/End\.\s*(.+?)\s*\|?\s*Mun\/UF\s+(.+?)\/([A-Z]{2})\s*(.*?)\s*\n?CEP\s*(\d{5}-?\d{3})/i);
+        if (me) { cur.endereco = limpa(me[1] + (me[4] ? ' - ' + me[4] : '')); cur.cidade = limpa(me[2]); cur.uf = me[3]; cur.cep = fmtCep(me[5]); }
+        const ch = txt.match(/CHAVE DE ACESSO\s*\n\s*([\d ]{40,})/i); if (ch) cur.chave = ch[1].replace(/\s/g, '');
+      }
+      const tot = txt.match(/TOTAL:\s*R\$\s*([\d.,]+)/i); if (tot) cur.totalDace = num(tot[1].replace(',', '.'));
+    }
+    if (cur) { cur.paginas.push(idx + 1); cur.texto.push(`— página ${idx + 1} —\n` + ls.join('\n')); }
+  });
+  const pedidos = ordem.map(n => {
+    const p = peds[n];
+    const grupos = {};
+    for (const l of p.lotes) {
+      let d = limpa(l.desc.join(' ')), qtd = 1;
+      const q = d.match(/^Qtd:\s*(\d+)\s*-\s*(.*)$/i);
+      if (q) { qtd = +q[1]; d = q[2]; } else d = d.replace(/^Venda\s*n[ºo°]\s*\S+\s*-\s*/i, '');
+      d = limpa(d.replace(/^-\s*/, '')) || '(sem descrição)';
+      const unit = r2(l.bruto / qtd);
+      const k = norm(d) + '|' + unit;
+      if (!grupos[k]) grupos[k] = { desc: d, qtd: 0, valor: unit, bruto: 0, liq: 0, lotes: 0 };
+      Object.assign(grupos[k], { qtd: grupos[k].qtd + qtd, bruto: grupos[k].bruto + l.bruto, liq: grupos[k].liq + l.liq, lotes: grupos[k].lotes + 1 });
+    }
+    const bruto = r2(p.lotes.reduce((s, l) => s + l.bruto, 0)), liq = r2(p.lotes.reduce((s, l) => s + l.liq, 0));
+    return {
+      cliente: p.cliente || p.clienteDace, handle: p.handle, pedido: `Jamble #${n} @${p.handle}`, rastreio: '', chave: p.chave || '',
+      cpf: p.cpf || '', endereco: p.endereco || '', cidade: p.cidade || '', uf: p.uf || '', cep: p.cep || '',
+      itens: Object.values(grupos), lotes: p.lotes.length, bruto, liq, comissao: r2(bruto - liq), totalDace: p.totalDace,
+      jmb: p.lotes.map(l => l.jmb).filter(Boolean), paginas: p.paginas, texto: p.texto,
+    };
+  });
+  return { resumo, pedidos };
+}
+
+/* Encontra o produto do cadastro para o nome lido na etiqueta:
+   conf 'ok'  = nome igual ao cadastro (ou a um nome já confirmado antes)
+   conf 'sug' = parecido — a venda fica PENDENTE até você confirmar
+   conf 'sem' = sem cadastro — a venda fica PENDENTE até cadastrar o produto */
 function acharProduto(desc) {
+  const nd = norm(desc).replace(/\s+/g, ' ').trim();
+  const ativos = Store.data.produtos.filter(x => x.ativo !== 'nao');
+  const igual = ativos.find(p => norm(p.nome).replace(/\s+/g, ' ').trim() === nd || apelidosDe(p).some(a => norm(a).replace(/\s+/g, ' ').trim() === nd));
+  if (igual) return { p: igual, conf: 'ok' };
   const pal = s => new Set(norm(s).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 2));
   const d = pal(desc); let melhor = null, nota = 0;
-  for (const p of Store.data.produtos.filter(x => x.ativo !== 'nao')) {
-    if (norm(p.nome) === norm(desc) || (p.sku && norm(desc).includes(norm(p.sku)))) return p;
-    const q = pal(p.nome); const inter = [...d].filter(w => q.has(w)).length;
-    const n = inter / Math.max(1, Math.min(d.size, q.size) + (Math.abs(d.size - q.size) * 0.25));
-    if (n > nota) { nota = n; melhor = p; }
+  for (const p of ativos) {
+    for (const nome of [p.nome, ...apelidosDe(p)]) {
+      const q = pal(nome); const inter = [...d].filter(w => q.has(w)).length;
+      const n = inter / Math.max(1, Math.max(d.size, q.size));
+      if (n > nota) { nota = n; melhor = p; }
+    }
   }
-  return nota >= 0.6 ? melhor : null;
+  return nota >= 0.5 ? { p: melhor, conf: 'sug' } : { p: null, conf: 'sem' };
 }
+
+const chipConf = c => c === 'ok' ? '<span class="conf ok">✓ confirmado</span>'
+  : c === 'sug' ? '<span class="conf sug">≈ nome parecido — venda fica pendente · <button type="button" class="link" data-okconf>é este mesmo</button></span>'
+  : '<span class="conf sem">sem cadastro — venda fica pendente até cadastrar o produto</span>';
 
 function abrirImportarEtiquetas() {
   const plats = plataformasAtivas().map(p => [p.nome, p.nome + (num(p.comissao) ? ` (${fmtPct(num(p.comissao))}%)` : '')]);
   const platPadrao = (plataformasAtivas().find(p => /jamble/i.test(p.nome)) || plataformasAtivas()[0] || {}).nome;
-  let pedidos = [];
+  let pedidos = [], impResumo = null;
   $('#modal').classList.add('pdv-modal');
   Modal.open({
     title: 'Importar vendas pelo PDF de etiquetas', submit: 'Lançar vendas selecionadas',
@@ -2107,7 +2249,7 @@ function abrirImportarEtiquetas() {
       </div>
       <div class="grid g4" style="margin-top:14px">
         ${field('Data das vendas', '<input type="date" id="impData" value="' + hoje() + '">')}
-        ${field('Plataforma', `<select id="impPlat">${opt(plats, platPadrao)}</select>`)}
+        <label class="f">Plataforma<div class="num-fixo">Jamble<small>todas as vendas do PDF</small></div></label>
         ${field('Forma de recebimento', `<select id="impForma">${opt(FORMAS_VENDA, 'Transferência')}</select>`)}
         ${field('Repasse previsto em (dias)', '<input type="number" id="impDias" min="0" value="7">')}
       </div>
@@ -2125,24 +2267,34 @@ function abrirImportarEtiquetas() {
         try {
           const pags = await lerPaginasPDF(f, (n, t) => { res.innerHTML = `<div class="note">Lendo página ${n} de ${t}…</div>`; });
           if (!pags.some(p => p.length)) { res.innerHTML = '<div class="note warn">Este PDF não tem texto (parece ser uma imagem escaneada). Me envie um exemplo para eu adaptar a leitura.</div>'; return; }
-          pedidos = agruparPedidos(pags).map(p => ({ ...p, incluir: true, dup: !!((p.pedido && existentes.includes(p.pedido)) || (p.rastreio && existentes.includes(p.rastreio))) }));
-          pedidos.forEach(p => { if (p.dup) p.incluir = false; p.itens.forEach(i => { const m = acharProduto(i.desc); i.produtoId = m ? m.id : ''; }); });
+          let resumo = null;
+          if (ehJamble(pags)) { const r = analisarJamble(pags); resumo = r.resumo; pedidos = r.pedidos; $('#impForma').value = 'Repasse da plataforma'; }
+          else pedidos = agruparPedidos(pags);
+          pedidos = pedidos.map(p => ({ ...p, incluir: true, dup: !!((p.chave && existentes.includes(p.chave)) || (p.pedido && existentes.includes(p.pedido)) || (p.rastreio && existentes.includes(p.rastreio))) }));
+          impResumo = resumo;
+          pedidos.forEach(p => { if (p.dup) p.incluir = false; p.itens.forEach(i => { const m = acharProduto(i.desc); i.produtoId = m.p ? m.p.id : ''; i.conf = m.conf; }); });
           pintar(pags.length, f.name);
         } catch (e) { res.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; }
       }
       function pintar(nPags, nome) {
         if (!pedidos.length) { res.innerHTML = `<div class="note warn">Não encontrei pedidos no arquivo <b>${esc(nome)}</b> (${nPags} páginas). Me envie este PDF para eu ajustar a leitura ao formato da Jamble.</div>`; return; }
-        res.innerHTML = `<div class="section-t">${pedidos.length} pedido(s) encontrado(s) em ${nPags} página(s) — confira antes de lançar</div>` + pedidos.map((p, k) => `
+        const sb = r2(pedidos.reduce((s, p) => s + (p.bruto || 0), 0)), sl = r2(pedidos.reduce((s, p) => s + (p.liq || 0), 0)), nl = pedidos.reduce((s, p) => s + (p.lotes || 0), 0);
+        const confere = impResumo && impResumo.bruto ? (Math.abs(sb - impResumo.bruto) < 0.05 && Math.abs(sl - impResumo.liq) < 0.05) : null;
+        res.innerHTML = (impResumo ? `<div class="imp-resumo ${confere ? 'ok' : 'warn'}"><b>Resumo da live (Jamble)</b>
+            <span>Vendas: <b>${brl(impResumo.bruto)}</b></span><span>Após taxas: <b>${brl(impResumo.liq)}</b></span><span>Taxas: <b>${brl(impResumo.bruto - impResumo.liq)}</b></span><span>Itens: <b>${impResumo.itens || nl}</b></span>
+            <span>${confere ? '✓ a soma dos compradores confere com o resumo' : `⚠ soma lida: ${brl(sb)} / ${brl(sl)} — confira`}</span></div>` : '')
+          + `<div class="section-t">${pedidos.length} venda(s) encontrada(s) em ${nPags} página(s) — confira antes de lançar</div>` + pedidos.map((p, k) => `
           <div class="imp-ped ${p.incluir ? '' : 'off'}" data-k="${k}">
             <div class="imp-head">
               <label class="check"><input type="checkbox" data-inc ${p.incluir ? 'checked' : ''}></label>
               <label class="f" style="flex:1">Cliente<input data-cli value="${esc(p.cliente || '')}" placeholder="Nome do comprador"></label>
-              <div class="imp-meta">${p.pedido ? `Pedido <b>${esc(p.pedido)}</b>` : ''}${p.rastreio ? `<br>Rastreio <b>${esc(p.rastreio)}</b>` : ''}${p.cidade ? `<br>${esc(p.cidade)}${p.uf ? '/' + esc(p.uf) : ''}` : ''}</div>
+              <div class="imp-meta">${p.pedido ? `<b>${esc(p.pedido)}</b>` : ''}${p.rastreio ? `<br>Rastreio <b>${esc(p.rastreio)}</b>` : ''}${p.cidade ? `<br>${esc(p.cidade)}${p.uf ? '/' + esc(p.uf) : ''}` : ''}${p.lotes ? `<br>${p.lotes} lote(s) · taxa Jamble ${brl(p.comissao)}` : ''}</div>
               ${p.dup ? '<span class="badge amber">já importado</span>' : ''}
             </div>
             <table class="imp-itens"><thead><tr><th>Produto no ERP</th><th>Qtd</th><th>Valor unit.</th><th class="r">Subtotal</th></tr></thead><tbody>
             ${p.itens.length ? p.itens.map((i, n) => `<tr data-n="${n}">
-              <td><select data-prod><option value="">— escolher —</option><option value="__novo__" ${i.produtoId === '__novo__' ? 'selected' : ''}>➕ Cadastrar “${esc(i.desc)}”</option>${Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === i.produtoId ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select><small class="muted">lido: ${esc(i.desc)}</small></td>
+              <td><select data-prod><option value="">— sem cadastro (venda fica pendente) —</option>${Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === i.produtoId ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select>
+                <small class="muted">lido: ${esc(i.desc)}</small>${chipConf(i.conf)}</td>
               <td><input data-qtd inputmode="decimal" value="${esc(qtdFmt(i.qtd))}"></td>
               <td><input data-val inputmode="decimal" value="${dec(i.valor)}"></td>
               <td class="r strong">${brl(i.qtd * i.valor)}</td></tr>`).join('') : '<tr><td colspan="4" class="muted">Nenhum item lido nesta etiqueta — esta venda não será lançada.</td></tr>'}
@@ -2154,7 +2306,8 @@ function abrirImportarEtiquetas() {
       function total() {
         const sel = pedidos.filter(p => p.incluir && p.itens.length);
         const t = sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0);
-        const el = $('#impTot', body); if (el) el.innerHTML = `${sel.length} venda(s) selecionada(s) · total <b>${brl(t)}</b>`;
+        const pend = sel.filter(p => p.itens.some(i => i.conf !== 'ok')).length;
+        const el = $('#impTot', body); if (el) el.innerHTML = `${sel.length} venda(s) selecionada(s) · <span class="pos">${sel.length - pend} confirmada(s)</span> · <span class="${pend ? 'neg' : ''}">${pend} pendente(s)</span> · total <b>${brl(t)}</b>`;
       }
       res.addEventListener('input', e => {
         const card = e.target.closest('.imp-ped'); if (!card) return;
@@ -2168,60 +2321,134 @@ function abrirImportarEtiquetas() {
         const card = e.target.closest('.imp-ped'); if (!card) return;
         const p = pedidos[+card.dataset.k];
         if (e.target.matches('[data-inc]')) { p.incluir = e.target.checked; card.classList.toggle('off', !p.incluir); total(); }
-        if (e.target.matches('[data-prod]')) p.itens[+e.target.closest('tr').dataset.n].produtoId = e.target.value;
+        if (e.target.matches('[data-prod]')) {
+          const tr = e.target.closest('tr'), i = p.itens[+tr.dataset.n];
+          i.produtoId = e.target.value; i.conf = e.target.value ? 'ok' : 'sem';
+          $('.conf', tr).outerHTML = chipConf(i.conf); total();
+        }
+      });
+      res.addEventListener('click', e => {
+        const b = e.target.closest('[data-okconf]'); if (!b) return;
+        const tr = b.closest('tr'), p = pedidos[+b.closest('.imp-ped').dataset.k], i = p.itens[+tr.dataset.n];
+        i.conf = 'ok'; $('.conf', tr).outerHTML = chipConf('ok'); total();
       });
     },
     onSubmit: () => {
       const sel = pedidos.filter(p => p.incluir && p.itens.length);
       if (!sel.length) { toast(pedidos.length ? 'Selecione pelo menos uma venda' : 'Escolha o PDF das etiquetas', 'err'); return false; }
-      const semProd = sel.find(p => p.itens.some(i => !i.produtoId));
-      if (semProd) { toast(`Escolha o produto de todos os itens (pedido de ${semProd.cliente || 'sem nome'})`, 'err'); return false; }
       const semCli = sel.find(p => !String(p.cliente || '').trim());
       if (semCli) { toast('Informe o nome do cliente de todas as vendas selecionadas', 'err'); return false; }
-      const data = $('#impData').value || hoje(), canal = $('#impPlat').value, forma = $('#impForma').value, dias = Math.max(0, Math.floor(num($('#impDias').value)));
-      const pl = plataformaPorNome(canal), pct = num(pl?.comissao);
-      // 1) cadastros novos (produtos e clientes)
-      const cad = [], novosProd = {};
-      sel.forEach(p => p.itens.forEach(i => {
-        if (i.produtoId !== '__novo__') return;
-        const k = norm(i.desc);
-        if (!novosProd[k]) {
-          let n = Store.data.produtos.length + Object.keys(novosProd).length + 1, sku;
-          do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
-          novosProd[k] = { id: uid(), sku, nome: i.desc, categoria: '', unidade: 'un', custo: 0, preco: i.valor, estoqueMin: 0, ean: '', ncm: '', ativo: 'sim', criadoEm: agora(), foto: '' };
-          cad.push(up('produtos', novosProd[k]));
-        }
-        i.produtoId = novosProd[k].id;
-      }));
-      sel.forEach(p => {
-        const nome = p.cliente.trim();
-        let c = Store.data.contatos.find(x => (x.tipo === 'Cliente' || x.tipo === 'Ambos') && norm(x.nome) === norm(nome));
-        if (!c) { c = { id: uid(), tipo: 'Cliente', nome, documento: '', telefone: '', email: '', cidade: p.cidade || '', uf: p.uf || '', cep: p.cep || '', endereco: p.endereco || '', fantasia: '', obs: 'Cadastrado pela importação de etiquetas', criadoEm: agora() }; cad.push(up('contatos', c)); Store.apply([up('contatos', c)]); }
+      const data = $('#impData').value || hoje(), forma = $('#impForma').value, dias = Math.max(0, Math.floor(num($('#impDias').value)));
+      const canal = 'Jamble';
+      const ops = [];
+      // plataforma Jamble garantida (taxa padrão 10%)
+      { const base = garantirPlataformas(); ops.push(...base); Store.apply(base); }
+      if (!Store.data.plataformas.some(x => x.nome === 'Jamble')) { const pj = up('plataformas', { id: 'pl-jamble', nome: 'Jamble', comissao: 10, ativo: 'sim', criadoEm: agora() }); ops.push(pj); Store.apply([pj]); }
+      // clientes: procura por @nick, depois CPF, depois nome
+      for (const p of sel) {
+        const nome = p.cliente.trim(), nick = limpaNick(p.handle), cpfDig = soDig(p.cpf);
+        let c = (nick && Store.data.contatos.find(x => limpaNick(x.nick).toLowerCase() === nick.toLowerCase()))
+          || (cpfDig && Store.data.contatos.find(x => soDig(x.documento) === cpfDig))
+          || Store.data.contatos.find(x => (x.tipo === 'Cliente' || x.tipo === 'Ambos') && norm(x.nome) === norm(nome));
+        if (!c) {
+          c = { id: uid(), tipo: 'Cliente', nome, nick, documento: cpfDig ? fmtDoc(cpfDig) : '', telefone: '', email: '', cidade: p.cidade || '', uf: p.uf || '', cep: p.cep || '', endereco: p.endereco || '', fantasia: '', obs: 'Cadastrado pela importação do PDF da Jamble', criadoEm: agora() };
+          ops.push(up('contatos', c)); Store.apply([up('contatos', c)]);
+        } else if (nick && !c.nick) { c = { ...c, nick }; ops.push(up('contatos', c)); Store.apply([up('contatos', c)]); }
         p.clienteId = c.id;
-      });
-      if (cad.length) Store.apply(cad);
-      // 2) vendas
-      const ops = [...cad];
+      }
+      // nomes confirmados na conferência passam a ser reconhecidos nas próximas importações
+      for (const p of sel) for (const i of p.itens) if (i.conf === 'ok' && i.produtoId) {
+        const np = comApelido(produto(i.produtoId), i.desc); if (np) { ops.push(up('produtos', np)); Store.apply([up('produtos', np)]); }
+      }
       let numero = proxNumero(Store.data.vendas);
+      let nPend = 0;
       for (const p of sel) {
         const total = r2(p.itens.reduce((s, i) => s + i.qtd * i.valor, 0));
+        const pendente = p.itens.some(i => i.conf !== 'ok' || !i.produtoId);
+        if (pendente) nPend++;
+        const pl = plataformaPorNome(canal), pct = num(pl?.comissao);
         const rec = {
-          id: uid(), numero: String(numero++), data, clienteId: p.clienteId, canal, status: 'Atendido',
-          itens: p.itens.map(i => ({ produtoId: i.produtoId, qtd: i.qtd, valor: i.valor })), frete: 0, desconto: 0, total,
-          formaPgto: forma, parcelas: 1, vencimento: addDias(data, dias),
-          obs: ['Importado do PDF de etiquetas', p.pedido && 'Pedido ' + p.pedido, p.rastreio && 'Rastreio ' + p.rastreio].filter(Boolean).join(' · '),
-          criadoEm: agora(), comissaoPct: pct, comissao: r2(total * pct / 100),
+          id: uid(), numero: String(numero++), data, clienteId: p.clienteId, canal, status: pendente ? 'Pendente' : 'Atendido',
+          itens: p.itens.map(i => ({ produtoId: i.conf === 'sem' ? '' : (i.produtoId || ''), descricao: i.desc, qtd: i.qtd, valor: i.valor, conf: i.produtoId ? i.conf : 'sem' })),
+          frete: 0, desconto: 0, total, formaPgto: forma, parcelas: 1, vencimento: addDias(data, dias),
+          obs: ['Importado do PDF da Jamble', p.pedido && p.pedido, p.rastreio && 'Rastreio ' + p.rastreio, p.chave && 'DCe ' + p.chave].filter(Boolean).join(' · '),
+          criadoEm: agora(),
+          comissaoPct: p.comissao != null && total ? r2(p.comissao / total * 100) : pct, comissao: p.comissao != null ? p.comissao : r2(total * pct / 100),
         };
         const ef = [up('vendas', rec), ...efeitosVenda(rec)];
         Store.apply(ef); ops.push(...ef);
       }
       Store.commit(ops);
       $('#modal').classList.remove('pdv-modal');
-      toast(`${sel.length} venda(s) lançada(s) — ${brl(sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0))}`, 'ok');
+      toast(`${sel.length} venda(s) lançada(s)${nPend ? ` · ${nPend} pendente(s) de confirmação` : ''} — ${brl(sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0))}`, 'ok');
     },
   });
 }
 
+
+/* =========================================================
+   CONFIRMAR VENDA PENDENTE (produtos da etiqueta)
+   ========================================================= */
+function formConfirmarVenda(v) {
+  const itens = v.itens.map(i => ({ ...i }));
+  const cli = contato(v.clienteId);
+  const opcoes = sel => '<option value="">— escolher produto —</option><option value="__novo__">➕ Cadastrar como produto novo</option>'
+    + Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.nome)}</option>`).join('');
+  $('#modal').classList.add('pdv-modal');
+  Modal.open({
+    title: `Confirmar venda nº ${v.numero}`, submit: 'Confirmar venda',
+    body: `
+      <div class="note warn" style="margin-top:0">Esta venda veio do PDF da Jamble e tem produto(s) a confirmar. Enquanto estiver <b>pendente</b>, ela <b>não baixa o estoque</b> nem lança o valor a receber.</div>
+      <div class="grid g4" style="margin:12px 0">
+        <label class="f">Cliente<div class="num-fixo">${esc(cli?.nome || '—')}${cli?.nick ? `<small>@${esc(cli.nick)}</small>` : ''}</div></label>
+        <label class="f">Data<div class="num-fixo">${dataBR(v.data)}</div></label>
+        <label class="f">Plataforma<div class="num-fixo">${esc(v.canal || '—')}</div></label>
+        <label class="f">Total<div class="num-fixo">${brl(v.total)}</div></label>
+      </div>
+      <div class="items"><table>
+        <thead><tr><th>Nome na etiqueta</th><th>Produto no cadastro</th><th class="r">Qtd</th><th class="r">Valor unit.</th></tr></thead>
+        <tbody id="cfItens">${itens.map((i, k) => `<tr data-k="${k}">
+          <td class="wrap"><b>${esc(i.descricao || itemNome(i))}</b><br>${chipConf(i.conf === 'ok' && i.produtoId ? 'ok' : (i.produtoId ? 'sug' : 'sem')).replace(/<button[^>]*>.*?<\/button>/, '').replace(' · ', '')}</td>
+          <td class="wrap cf-prod"><select data-cf>${opcoes(i.produtoId)}</select>
+            <label class="check cf-lembrar"><input type="checkbox" data-lembrar checked><span>reconhecer este nome nas próximas importações</span></label></td>
+          <td class="r">${qtdFmt(i.qtd)}</td><td class="r">${brl(i.valor)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <p class="muted" style="font-size:12.5px;font-weight:700;margin:10px 0 0">“Cadastrar como produto novo” cria o produto com o nome da etiqueta e o preço vendido (custo zerado — ajuste depois em Produtos).</p>`,
+    onSubmit: (fd, body) => {
+      const linhas = $$('#cfItens tr', body).map(tr => ({ k: +tr.dataset.k, sel: $('[data-cf]', tr).value, lembrar: $('[data-lembrar]', tr).checked }));
+      const falta = linhas.find(l => !l.sel);
+      if (falta) { toast(`Escolha o produto de “${itens[falta.k].descricao}”`, 'err'); return false; }
+      const ops = [], novos = {};
+      for (const l of linhas) {
+        const i = itens[l.k];
+        if (l.sel === '__novo__') {
+          const chave = norm(i.descricao);
+          if (!novos[chave]) {
+            let n = Store.data.produtos.length + Object.keys(novos).length + 1, sku;
+            do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
+            novos[chave] = { id: uid(), sku, nome: i.descricao, categoria: '', unidade: 'un', custo: 0, preco: i.valor, estoqueMin: 0, ean: '', ncm: '', ativo: 'sim', criadoEm: agora(), foto: '', apelidos: '' };
+            ops.push(up('produtos', novos[chave]));
+          }
+          i.produtoId = novos[chave].id;
+        } else {
+          i.produtoId = l.sel;
+          if (l.lembrar) { const np = comApelido(produto(l.sel), i.descricao); if (np) ops.push(up('produtos', np)); }
+        }
+        i.conf = 'ok';
+      }
+      Store.apply(ops);
+      const rec = { ...v, itens, status: 'Atendido' };
+      const salvar = () => {
+        Store.commit([...ops, up('vendas', rec), ...efeitosVenda(rec)]);
+        $('#modal').classList.remove('pdv-modal');
+        toast(`Venda nº ${v.numero} confirmada — estoque e contas a receber lançados`, 'ok');
+      };
+      const semEst = faltaEstoque(rec);
+      if (semEst) { Modal.close(); setTimeout(() => confirmar('Confirmar mesmo assim?' + semEst, salvar, 'Confirmar'), 50); return false; }
+      salvar();
+    },
+  });
+}
 /* =========================================================
    COMPRA DE INSUMOS (embalagens e materiais de envio)
    ========================================================= */
