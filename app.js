@@ -868,7 +868,7 @@ function imprimirPedido(tipo, p) {
   if (!w) return toast('Permita pop-ups para imprimir', 'err');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${V ? 'Pedido de venda' : 'Pedido de compra'} ${esc(p.numero)}</title>
   <style>body{font-family:Arial,sans-serif;color:#111;margin:32px;font-size:14px}h1{font-size:20px;margin:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border-bottom:1px solid #ddd;padding:8px;text-align:left}th{background:#0B3A8C;color:#FFD400}.r{text-align:right}.head{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #FFD400;padding-bottom:12px}.tot{margin-top:12px;text-align:right;font-size:16px}img{height:80px}</style></head><body>
-  <div class="head"><img src="${new URL('logo.jpg', location.href)}"><div style="text-align:right"><h1>${V ? 'Pedido de venda' : 'Pedido de compra'} nº ${esc(p.numero)}</h1><div>Data: ${dataBR(p.data)} · Situação: ${esc(p.status)}</div></div></div>
+  <div class="head"><img src="${new URL('logo.png', location.href)}"><div style="text-align:right"><h1>${V ? 'Pedido de venda' : 'Pedido de compra'} nº ${esc(p.numero)}</h1><div>Data: ${dataBR(p.data)} · Situação: ${esc(p.status)}</div></div></div>
   <p><b>${V ? 'Cliente' : 'Fornecedor'}:</b> ${esc(c?.nome || (V ? 'Consumidor final' : ''))}${c?.documento ? ' · ' + esc(c.documento) : ''}${c?.telefone ? ' · ' + esc(c.telefone) : ''}${c?.email ? ' · ' + esc(c.email) : ''}${c?.cidade ? '<br>' + esc(c.cidade) + (c.uf ? '/' + esc(c.uf) : '') : ''}</p>
   <table><thead><tr><th>Produto</th><th class="r">Qtd</th><th class="r">Unitário</th><th class="r">Subtotal</th></tr></thead><tbody>
   ${p.itens.map(i => `<tr><td>${esc(produto(i.produtoId)?.sku || '')} ${esc(nomeProduto(i.produtoId))}</td><td class="r">${qtdFmt(i.qtd)}</td><td class="r">${brl(i.valor)}</td><td class="r">${brl(num(i.qtd) * num(i.valor))}</td></tr>`).join('')}
@@ -1329,6 +1329,19 @@ const Auth = {
   },
 };
 
+/* ---------- Animação de entrada (raio na logo) ---------- */
+function animarEntrada(depois) {
+  const el = $('#intro');
+  const reduz = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.classList.remove('out');
+  el.classList.add('on');
+  // reinicia as animações
+  el.querySelectorAll('*').forEach(n => { n.style.animation = 'none'; void n.getBoundingClientRect(); n.style.animation = ''; });
+  setTimeout(depois, reduz ? 50 : 450);           // monta o painel por baixo da animação
+  setTimeout(() => el.classList.add('out'), reduz ? 100 : 1550);
+  setTimeout(() => el.classList.remove('on', 'out'), reduz ? 200 : 2150);
+}
+
 const EYE = '<svg viewBox="0 0 24 24"><path d="M12 5C7 5 2.7 8.1 1 12.5 2.7 16.9 7 20 12 20s9.3-3.1 11-7.5C21.3 8.1 17 5 12 5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
 const pwdInput = (name, ph, ac, id = '') => `<div class="pwd"><input type="password" name="${name}" ${id ? `id="${id}"` : ''} placeholder="${ph}" autocomplete="${ac}" required><button type="button" class="icon-btn eye" data-eye tabindex="-1" aria-label="Mostrar senha">${EYE}</button></div>`;
 const emailBox = () => `<div class="email-fixed"><span class="avatar">${esc(EMAIL_PADRAO[0].toUpperCase())}</span><span>${esc(EMAIL_PADRAO)}</span></div><input type="hidden" name="email" value="${esc(EMAIL_PADRAO)}">`;
@@ -1437,15 +1450,15 @@ function renderAuth(tela, aviso = '', extra = {}) {
       if (tela === 'login') {
         if (!fd.email || !fd.senha) throw new Error('Informe e-mail e senha.');
         await Auth.login(fd.email, fd.senha, lembrar);
-        Auth.entrar();
+        animarEntrada(() => Auth.entrar());
       } else if (tela === 'novo' || tela === 'codigo') {
         if (tela === 'codigo' && !/^\d{6}$/.test(String(fd.codigo).trim())) throw new Error('Digite o código de 6 dígitos.');
         Auth.checarSenha(fd.senha);
         if (fd.senha !== fd.conf) throw new Error('As senhas não conferem.');
         if (tela === 'novo') await Auth.registrar(fd.email, fd.senha, lembrar);
         else { const r = await Store.api({ action: 'reset', email: fd.email, codigo: fd.codigo, senha: fd.senha }); Auth.salvar(r, false); }
-        Auth.entrar();
-        toast(tela === 'novo' ? 'Acesso criado. Bem-vindo!' : 'Senha alterada', 'ok');
+        animarEntrada(() => Auth.entrar());
+        setTimeout(() => toast(tela === 'novo' ? 'Acesso criado. Bem-vindo!' : 'Senha alterada', 'ok'), 1800);
       } else if (tela === 'esqueci') {
         if (Store.online) {
           await Store.api({ action: 'forgot', email: EMAIL_PADRAO });

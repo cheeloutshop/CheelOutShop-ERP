@@ -31,10 +31,7 @@
   <div class="auth" id="auth">
     <section class="auth-hero">
       <div class="auth-hero-in">
-        <div class="lockup lg">
-          <svg class="mark"><use href="#mark"/></svg>
-          <div class="wordmark"><b>Cheel Out <em>Shop</em></b><small>Gestão empresarial</small></div>
-        </div>
+        <img class="logo-img hero-logo" src="logo.png" alt="Cheel Out Shop">
         <h1 class="hero-t">Sua loja inteira<br>em um só lugar.</h1>
         <ul class="hero-list">
           <li>Vendas e pedidos de compra</li>
@@ -45,19 +42,15 @@
       </div>
     </section>
     <section class="auth-side">
-      <div class="lockup sm auth-mobile-brand">
-        <svg class="mark"><use href="#mark"/></svg>
-        <div class="wordmark"><b>Cheel Out <em>Shop</em></b><small>Gestão empresarial</small></div>
-      </div>
+      <img class="logo-img auth-mobile-brand" src="logo.png" alt="Cheel Out Shop">
       <div class="auth-card" id="authCard"></div>
       <div class="auth-mode" id="authMode"></div>
     </section>
   </div>
 
   <aside class="sidebar" id="sidebar">
-    <a class="brand lockup" href="#/painel" aria-label="Cheel Out Shop — Painel">
-      <svg class="mark"><use href="#mark"/></svg>
-      <div class="wordmark"><b>Cheel Out <em>Shop</em></b><small>Gestão empresarial</small></div>
+    <a class="brand" href="#/painel" aria-label="Cheel Out Shop — Painel">
+      <img class="logo-img" src="logo.png" alt="Cheel Out Shop">
     </a>
     <nav class="nav">
       <a href="#/painel" data-route="painel"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zm0 8h8v-6H3zm10 0h8V11h-8zm0-18v6h8V3z"/></svg>Painel</a>
@@ -110,6 +103,23 @@
   </dialog>
 
   <div class="toasts" id="toasts"></div>
+
+  <!-- ============ ANIMAÇÃO DE ENTRADA (raio) ============ -->
+  <div class="intro" id="intro" aria-hidden="true">
+    <div class="intro-glow"></div>
+    <div class="intro-stage">
+      <div class="intro-logo">
+        <img src="logo.png" alt="">
+        <span class="intro-shine"></span>
+      </div>
+      <svg class="bolt" viewBox="0 0 100 108">
+        <polyline class="bolt-main" pathLength="100" points="72,-6 47,30 63,33 36,63 56,66 28,108"/>
+        <polyline class="bolt-branch" pathLength="100" points="47,30 30,40 34,48"/>
+        <polyline class="bolt-branch b2" pathLength="100" points="56,66 74,76 69,86"/>
+      </svg>
+    </div>
+    <div class="intro-flash"></div>
+  </div>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
