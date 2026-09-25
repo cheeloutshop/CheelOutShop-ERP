@@ -14,7 +14,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '12';
+const APP_VERSAO = '13';
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -467,11 +467,18 @@ function viewPainel(el) {
   const serieV = meses.map(m => vendasOk.filter(v => (v.data || '').startsWith(m)).reduce((s, v) => s + num(v.total), 0));
   const serieC = meses.map(m => d.compras.filter(c => c.status === 'Recebido' && (c.data || '').startsWith(m)).reduce((s, c) => s + num(c.total), 0));
 
-  const limite = addDias(hoje(), 7);
-  const proximas = [
+  const limite = addDias(hoje(), 30);
+  const fv = UI.fVenc || 'todos';
+  const diasAte = d => Math.round((new Date(d + 'T12:00:00') - new Date(hoje() + 'T12:00:00')) / 864e5);
+  const todasProx = [
     ...recAb.map(c => ({ ...c, _t: 'receber' })),
     ...pagAb.map(c => ({ ...c, _t: 'pagar' })),
-  ].filter(c => c.vencimento <= limite).sort((a, b) => a.vencimento.localeCompare(b.vencimento)).slice(0, 8);
+  ].filter(c => c.vencimento && c.vencimento <= limite).sort((a, b) => a.vencimento.localeCompare(b.vencimento));
+  const proximas = todasProx.filter(c => fv === 'todos' || c._t === fv);
+  const faixa = d => d <= 7 ? 'v-red' : d <= 20 ? 'v-orange' : 'v-green';
+  const quando = d => d < 0 ? `vencido há ${-d} dia${d === -1 ? '' : 's'}` : d === 0 ? 'vence hoje' : d === 1 ? 'vence amanhã' : `vence em ${d} dias`;
+  const somaP = proximas.filter(c => c._t === 'pagar').reduce((s, c) => s + num(c.valor), 0);
+  const somaR = proximas.filter(c => c._t === 'receber').reduce((s, c) => s + num(c.valor), 0);
 
   el.innerHTML = `
     <div class="kpis">
@@ -487,11 +494,18 @@ function viewPainel(el) {
         <div class="legend"><span><i style="background:var(--blue-600)"></i>Vendas</span><span><i style="background:var(--yellow-2)"></i>Compras recebidas</span></div>
       </div>
       <div class="card">
-        <h3>Vencimentos (vencidos e próximos 7 dias)</h3>
-        ${proximas.length ? `<ul class="list">${proximas.map(c => `
-          <li><span class="l">${esc(c.descricao)}<span class="s">${c._t === 'receber' ? 'Receber' : 'Pagar'} · ${dataBR(c.vencimento)} ${statusConta(c) === 'Vencido' ? '· <b class="neg">vencido</b>' : ''}${c.contatoId ? ' · ' + esc(nomeContato(c.contatoId)) : ''}</span></span>
-          <span class="num ${c._t === 'receber' ? 'pos' : 'neg'}">${c._t === 'receber' ? '+' : '−'} ${brl(c.valor)}</span></li>`).join('')}</ul>`
-          : '<div class="empty">Nada vencendo nos próximos 7 dias 🎉</div>'}
+        <h3>Vencimentos — próximos 30 dias</h3>
+        <div class="venc-top">
+          <div class="chips">${[['todos', 'Todos'], ['pagar', 'A pagar'], ['receber', 'A receber']].map(([k, t]) => `<button class="chip ${fv === k ? 'on' : ''}" data-fv="${k}">${t}</button>`).join('')}</div>
+          <div class="venc-leg"><span><i class="v-red"></i>até 7 dias</span><span><i class="v-orange"></i>8 a 20</span><span><i class="v-green"></i>21 a 30</span></div>
+        </div>
+        ${proximas.length ? `<div class="venc-list">${proximas.map(c => { const d = diasAte(c.vencimento); return `
+          <div class="venc ${faixa(d)}">
+            <div class="venc-l"><b>${esc(c.descricao)}</b><small>${c._t === 'receber' ? 'A receber' : 'A pagar'} · ${dataBR(c.vencimento)}${c.contatoId && !String(c.descricao).includes(nomeContato(c.contatoId)) ? ' · ' + esc(nomeContato(c.contatoId)) : ''}</small></div>
+            <div class="venc-r"><span class="num strong ${c._t === 'receber' ? 'pos' : 'neg'}">${c._t === 'receber' ? '+' : '−'} ${brl(c.valor)}</span><small class="${d < 0 ? 'neg' : ''}">${quando(d)}</small></div>
+          </div>`; }).join('')}</div>
+          <div class="venc-tot">${fv !== 'receber' ? `<span>A pagar: <b class="neg">${brl(somaP)}</b></span>` : ''}${fv !== 'pagar' ? `<span>A receber: <b class="pos">${brl(somaR)}</b></span>` : ''}</div>`
+          : '<div class="empty">Nada vencendo nos próximos 30 dias 🎉</div>'}
       </div>
     </div>
     <div class="two even">
@@ -508,6 +522,7 @@ function viewPainel(el) {
       </div>
     </div>`;
   $('#novaVendaTop').onclick = () => formVenda();
+  $$('[data-fv]', el).forEach(b => b.onclick = () => { UI.fVenc = b.dataset.fv; render(); });
 }
 
 function chart(labels, a, b) {
@@ -595,6 +610,7 @@ function formProduto(p) {
         ${field('Categoria', inp('categoria', p.categoria, 'list="dlCats"') + `<datalist id="dlCats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist>`)}
         ${field('Unidade', `<select name="unidade">${opt(['un', 'cx', 'kg', 'g', 'L', 'm', 'par', 'kit', 'pct'], p.unidade)}</select>`)}
         ${field('Custo (R$)', inp('custo', dec(p.custo), 'inputmode="decimal" placeholder="0,00" id="pCusto"'))}
+        ${field('Markup (%)', '<input id="pMarkup" inputmode="decimal" placeholder="ex.: 50" autocomplete="off">')}
         ${field('Preço de venda (R$) *', inp('preco', dec(p.preco), 'inputmode="decimal" placeholder="0,00" required id="pPreco"'))}
         ${field('Estoque mínimo', inp('estoqueMin', p.estoqueMin, 'inputmode="decimal" placeholder="0"'))}
         ${field('EAN / código de barras', inp('ean', p.ean))}
@@ -605,7 +621,8 @@ function formProduto(p) {
       ${novo ? `<div class="section-t">Estoque inicial (opcional)</div><div class="grid g4">${field('Quantidade inicial', inp('estoqueIni', '', 'inputmode="decimal" placeholder="0"'))}</div>` : ''}`,
     onOpen: body => {
       const upd = () => { const c = num($('#pCusto').value), v = num($('#pPreco').value); $('#pMargem', body).textContent = v ? `Margem: ${((v - c) / v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% · Lucro por unidade: ${brl(v - c)} · Markup: ${c ? (v / c).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '–'}x` : 'Informe custo e preço para ver a margem.'; };
-      $('#pCusto').oninput = upd; $('#pPreco').oninput = upd; upd();
+      ligarMarkup($('#pCusto'), $('#pMarkup'), $('#pPreco'));
+      ['#pCusto', '#pPreco', '#pMarkup'].forEach(s => $(s).addEventListener('input', upd)); upd();
     },
     onSubmit: fd => {
       const sku = fd.sku.trim();
@@ -765,11 +782,11 @@ function viewPedidos(el, tipo) {
       <div class="chips"><button class="chip ${!st ? 'on' : ''}" data-st="">Todos</button>${(V ? ST_VENDA : ST_COMPRA).map(s => `<button class="chip ${st === s ? 'on' : ''}" data-st="${s}">${s}</button>`).join('')}</div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Nº</th><th>Data</th><th>${V ? 'Cliente' : 'Fornecedor'}</th>${V ? '<th>Canal</th>' : '<th>Chegada prev.</th>'}<th class="r">Itens</th><th>Pagamento</th><th class="r">Total</th><th>Situação</th><th></th></tr></thead>
+      <thead><tr><th>Nº</th><th>Data</th><th>${V ? 'Cliente' : 'Fornecedor'}</th>${V ? '<th>Canal</th>' : ''}<th class="r">Itens</th><th>Pagamento</th><th class="r">Total</th><th>Situação</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(p => `<tr>
         <td class="strong">${esc(p.numero)}</td><td>${dataBR(p.data)}</td>
         <td class="wrap">${esc(nomeContato(V ? p.clienteId : p.fornecedorId) || (V ? 'Consumidor final' : '—'))}</td>
-        ${V ? `<td>${esc(p.canal)}</td>` : `<td class="${p.status === 'Em aberto' && p.previsao && p.previsao < hoje() ? 'neg strong' : 'muted'}">${dataBR(p.previsao) || '—'}</td>`}
+        ${V ? `<td>${esc(p.canal)}</td>` : ''}
         <td class="r">${qtdFmt(p.itens.reduce((s, i) => s + num(i.qtd), 0))}</td>
         <td class="muted">${esc(p.formaPgto)}${num(p.parcelas) > 1 ? ` · ${p.parcelas}x` : ''}</td>
         <td class="r strong">${brl(p.total)}</td><td>${badgeVenda(p.status)}</td>
@@ -780,7 +797,7 @@ function viewPedidos(el, tipo) {
           <button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button>
           ${V ? `<button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button>` : (p.status !== 'Cancelado' ? `<button class="icon-btn del" data-cancel="${p.id}" title="Cancelar pedido">${ICON.undo}</button>` : '')}</span></td>
       </tr>`).join('') : emptyRow(V ? 9 : 8, Store.data[tipo].length ? 'Nada encontrado com esses filtros' : (V ? 'Nenhuma venda ainda. Clique em “Nova venda”.' : 'Nenhum pedido de compra ainda.'), V ? '🛒' : '🚚')}</tbody>
-      ${lista.length ? `<tfoot><tr><td colspan="6">${lista.length} pedido(s) · total sem cancelados</td><td class="r">${brl(tot)}</td><td colspan="2"></td></tr></tfoot>` : ''}
+      ${lista.length ? `<tfoot><tr><td colspan="${V ? 6 : 5}">${lista.length} pedido(s) · total sem cancelados</td><td class="r">${brl(tot)}</td><td colspan="2"></td></tr></tfoot>` : ''}
     </table></div>`;
   bindSearch('q' + key, 'q' + key);
   $('#m' + key).onchange = e => { UI['m' + key] = e.target.value; render(); };
@@ -1126,6 +1143,22 @@ function ligarDocumento(docInput, statusEl, get, ignorarId) {
   atualizar();
 }
 
+/* Markup: custo × (1 + markup%) = preço de venda. Editar o preço recalcula o markup. */
+const fmtPct = v => (isFinite(v) ? (Math.round(v * 100) / 100).toLocaleString('pt-BR', { maximumFractionDigits: 2, useGrouping: false }) : '');
+function ligarMarkup(custo, markup, preco) {
+  const pelaMarkup = () => {
+    const c = num(custo.value), m = markup.value.trim();
+    if (c > 0 && m !== '') preco.value = dec(c * (1 + num(m) / 100));
+  };
+  markup.addEventListener('input', pelaMarkup);
+  custo.addEventListener('input', pelaMarkup);
+  preco.addEventListener('input', () => {
+    const c = num(custo.value), v = num(preco.value);
+    markup.value = c > 0 && v > 0 ? fmtPct((v / c - 1) * 100) : '';
+  });
+  if (!markup.value && num(custo.value) > 0 && num(preco.value) > 0) markup.value = fmtPct((num(preco.value) / num(custo.value) - 1) * 100);
+}
+
 /* Campos de cadastro de pessoa (usados no cadastro rápido e no cadastro completo) */
 function camposPessoa(pref, c = {}) {
   const a = k => `data-${pref}="${k}"`;
@@ -1214,7 +1247,6 @@ function formCompra(p) {
       <div class="grid g4">
         <label class="f">Nº do pedido<div class="num-fixo" title="Número sequencial automático">${esc(numeroPrevisto)}${novo ? '<small>confirmado ao salvar</small>' : ''}</div></label>
         ${field('Data do pedido *', inp('data', p.data, 'type="date" required'))}
-        ${field('Previsão de chegada', inp('previsao', p.previsao, 'type="date"'))}
         ${field('Situação', `<select name="status" id="pedStatus">${opt(ST_COMPRA, p.status)}</select>`)}
         <label class="f span4">Fornecedor *
           <div class="ac" id="acForn">
@@ -1241,6 +1273,7 @@ function formCompra(p) {
           ${field('SKU / código', '<input data-np="sku" autocomplete="off">')}
           ${field('Categoria', '<input data-np="categoria" list="dlCatsPed" autocomplete="off">' + `<datalist id="dlCatsPed">${[...new Set(Store.data.produtos.map(x => x.categoria).filter(Boolean))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>`)}
           ${field('Custo por unidade (R$)', '<input data-np="custo" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
+          ${field('Markup (%)', '<input data-np="markup" inputmode="decimal" placeholder="ex.: 50" autocomplete="off">')}
           ${field('Preço de venda (R$)', '<input data-np="preco" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
           ${field('Estoque mínimo (un)', '<input data-np="estoqueMin" inputmode="decimal" placeholder="0" autocomplete="off">')}
         </div>
@@ -1360,6 +1393,7 @@ function formCompra(p) {
       $('[data-np-cancel]', pnlP).onclick = () => { pnlP.hidden = true; linhaAlvo = null; };
       pnlP.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); salvarProduto(); } });
       $('#addProdNovo', body).onclick = () => abrirProduto(null);
+      ligarMarkup($('[data-np=custo]', pnlP), $('[data-np=markup]', pnlP), $('[data-np=preco]', pnlP));
       recalc();
     },
     onSubmit: (fd, body) => {
@@ -1378,7 +1412,7 @@ function formCompra(p) {
       const rec = {
         id: p.id || uid(),
         numero: novo ? String(proxNumero(Store.data.compras)) : p.numero,   // número definido só agora, ao salvar
-        data: fd.data, previsao: fd.previsao || '', status: fd.status, fornecedorId: fd.contatoId, itens: linhas,
+        data: fd.data, previsao: p.previsao || '', status: fd.status, fornecedorId: fd.contatoId, itens: linhas,
         frete: r2(fd.frete), desconto: r2(fd.desconto), total, formaPgto,
         parcelas: formaPgto === 'Pix' ? 1 : Math.max(1, Math.floor(num(fd.parcelas)) || 1),
         vencimento: fd.vencimento || fd.data, obs: fd.obs, criadoEm: p.criadoEm || agora(),

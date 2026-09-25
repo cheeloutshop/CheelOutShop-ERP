@@ -417,3 +417,19 @@ img.auth-mobile-brand { display: none; }
 .items .c-fat input { min-width: 80px; }
 .items .c-qtd input { min-width: 72px; }
 .items .c-val input { min-width: 100px; }
+
+/* ---------- v13: vencimentos 30 dias ---------- */
+.venc-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.venc-leg { display: flex; gap: 12px; font-size: 12px; font-weight: 800; color: var(--ink-3); }
+.venc-leg i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.venc-list { display: flex; flex-direction: column; gap: 8px; max-height: 330px; overflow-y: auto; padding-right: 4px; }
+.venc { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 10px; border: 2px solid; border-left-width: 6px; background: #fff; }
+.venc-l, .venc-r { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.venc-l b { font-size: 14px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.venc-l small, .venc-r small { font-size: 12px; font-weight: 700; color: var(--ink-3); }
+.venc-r { align-items: flex-end; text-align: right; flex: none; }
+.venc.v-red, .venc-leg i.v-red { border-color: #E5484D; } .venc-leg i.v-red { background: #E5484D; }
+.venc.v-orange, .venc-leg i.v-orange { border-color: #F28C00; } .venc-leg i.v-orange { background: #F28C00; }
+.venc.v-green, .venc-leg i.v-green { border-color: #12925A; } .venc-leg i.v-green { background: #12925A; }
+.venc.v-red { background: #FFF7F7; } .venc.v-orange { background: #FFFAF2; } .venc.v-green { background: #F5FCF8; }
+.venc-tot { display: flex; justify-content: flex-end; gap: 18px; margin-top: 10px; font-size: 13px; font-weight: 800; color: var(--ink-2); }
