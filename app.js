@@ -101,6 +101,17 @@ const Store = {
       if (d) for (const k of Object.keys(COLS)) this.data[k] = (d[k] || []).map(r => this.normalize(k, r));
     } catch (e) {}
     try { this.queue = JSON.parse(localStorage.getItem(LS_QUEUE) || '[]'); } catch (e) { this.queue = []; }
+    // Se este navegador trabalhava no modo local e agora há uma planilha configurada (ex.: URL colada no config.js),
+    // guarda os dados locais para oferecer o envio à planilha depois do login — nada se perde.
+    try {
+      const modoAnterior = localStorage.getItem('cheel_erp_modo_v1');
+      const modoAtual = this.online ? 'online:' + this.cfg.url : 'local';
+      const temDados = Object.values(this.data).some(l => l.length);
+      if (this.online && (!modoAnterior || modoAnterior === 'local') && temDados && !localStorage.getItem(LS_MIGRAR)) {
+        localStorage.setItem(LS_MIGRAR, JSON.stringify(this.data));
+      }
+      localStorage.setItem('cheel_erp_modo_v1', modoAtual);
+    } catch (e) {}
   },
   get online() { return !!this.cfg.url; },
   normalize(sheet, r) {
@@ -1574,7 +1585,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
   $('#usarLocal') && ($('#usarLocal').onclick = () => trocarConexao(''));
   // prévia: clicar na logo da tela de login toca a animação (não faz login)
   $$('.hero-logo, img.auth-mobile-brand').forEach(l => { l.style.cursor = 'pointer'; l.title = 'Ver animação'; l.onclick = () => animarEntrada(() => {}); });
-  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v8</span>');
+  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v9</span>');
   const first = $('input:not([type=hidden]):not([type=checkbox])', card);
   if (first && !first.value) first.focus(); else { const s = $('input[type=password]', card); s && s.focus(); }
 
