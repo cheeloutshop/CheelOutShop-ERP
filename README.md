@@ -108,6 +108,15 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Consignação**: em Configurações, cadastre o dono dos produtos com o **imposto %** e a **comissão %** combinados. No produto, escolha o dono (custo zero) e, se quiser, taxas diferentes. Ao faturar a venda, entra em Contas a pagar o **repasse** = valor vendido − taxa da Jamble − imposto − comissão.
 - **Atualize o script da planilha** (cole o novo `Code.gs` e publique uma **nova versão**). As abas/colunas novas (`saques`, consignação) são criadas sozinhas no primeiro acesso.
 
+## v19 — saldos, taxa de saque, retiradas dos sócios e sorteios
+
+- **Saldos de abertura** (Configurações): conta do banco, Jamble disponível e Jamble a liberar. O Painel mostra o **saldo em conta** = saldo inicial + recebido − pago.
+- **Saque Jamble** com **taxa de saque** e **antecipação** (1% do valor antecipado, editável). As taxas entram em Contas a pagar (já pagas) na categoria **Comissão Jamble** e somam nas comissões do mês.
+- A faixa da Jamble mostra **disponível para saque** (vendas com mais de 20 dias) e **a liberar**.
+- **Retirada** = pró-labore dos sócios em produtos: escolha o sócio (Michel Méleck Proença ou Igor Pacci Érnica). Baixa o estoque a custo, não gera valor a receber e fica fora das vendas, margens e comissões. Retiradas antigas lançadas como venda são convertidas automaticamente.
+- **Sorteio** (nova plataforma): baixa o estoque a custo, com a identificação do sorteio, e aparece no Painel como **custo do mês**, separado.
+- **Atualize o script da planilha** (nova versão da implantação). As colunas novas são criadas sozinhas.
+
 ## Como os dados se ligam
 
 ```

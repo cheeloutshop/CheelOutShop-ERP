@@ -9,15 +9,15 @@ const COLS = {
   contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick', 'consignante', 'consigImposto', 'consigComissao'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
   compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
-  vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'comissaoPct', 'comissao'],
+  vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'comissaoPct', 'comissao', 'referencia'],
   insumos:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm'],
   plataformas: ['id', 'nome', 'comissao', 'ativo', 'criadoEm'],
-  saques:     ['id', 'data', 'plataforma', 'valor', 'obs', 'criadoEm'],
+  saques:     ['id', 'data', 'plataforma', 'valor', 'obs', 'criadoEm', 'taxa', 'antecipacao'],
   pagar:      ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '18';
+const APP_VERSAO = '19';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -37,7 +37,7 @@ const ST_COMPRA = ['Em aberto', 'Recebido', 'Cancelado'];
 const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];   // Pix = à vista; os demais podem parcelar
 const UN_COMPRA = [['UN', 'Unidade'], ['CX', 'Caixa'], ['FD', 'Fardo'], ['PCT', 'Pacote'], ['DZ', 'Dúzia'], ['KIT', 'Kit'], ['PAR', 'Par'], ['OUTRA', 'Outra']];
 const fatorItem = it => (!it.un || it.un === 'UN') ? 1 : Math.max(1, num(it.fator) || 1);
-const CAT_PAGAR = ['Fornecedores', 'Repasse consignado', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
+const CAT_PAGAR = ['Fornecedores', 'Repasse consignado', 'Comissão Jamble', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
 const CAT_RECEBER = ['Vendas', 'Serviços', 'Outros'];
 
 /* ---------------- Helpers ---------------- */
@@ -293,18 +293,20 @@ function gerarParcelas(total, n, primeiro) {
 /* Efeitos de uma venda: movimentos de saída + contas a receber */
 function efeitosVenda(v) {
   const ops = [];
-  Store.data.movimentos.filter(m => m.origem === 'venda' && m.origemId === v.id).forEach(m => ops.push(del('movimentos', m.id)));
+  Store.data.movimentos.filter(m => ['venda', 'retirada', 'sorteio'].includes(m.origem) && m.origemId === v.id).forEach(m => ops.push(del('movimentos', m.id)));
   const recs = Store.data.receber.filter(r => r.origem === 'venda' && r.origemId === v.id);
   const temPago = recs.some(r => r.status === 'Pago');
+  const interna = ehInterna(v), sorteio = interna && ehSorteio(v.canal);
   if (v.status === 'Atendido') {
     for (const it of v.itens) {
       ops.push(up('movimentos', {
         id: uid(), data: v.data, produtoId: it.produtoId, tipo: 'saida', quantidade: num(it.qtd),
-        custoUnit: num(produto(it.produtoId)?.custo), origem: 'venda', origemId: v.id,
-        obs: 'Venda nº ' + v.numero, criadoEm: agora(),
+        custoUnit: num(produto(it.produtoId)?.custo), origem: interna ? (sorteio ? 'sorteio' : 'retirada') : 'venda', origemId: v.id,
+        obs: interna ? (sorteio ? `Sorteio${v.referencia ? ': ' + v.referencia : ''} · nº ${v.numero}` : `Retirada de sócio: ${nomeContato(v.clienteId) || 'não informado'} · nº ${v.numero}`) : 'Venda nº ' + v.numero, criadoEm: agora(),
       }));
     }
-    if (!temPago) {
+    if (interna) recs.forEach(r => ops.push(del('receber', r.id)));   // retirada/sorteio não gera valor a receber
+    else if (!temPago) {
       recs.forEach(r => ops.push(del('receber', r.id)));
       const jamble = ehCanalJamble(v.canal);
       const repasse = jamble || v.formaPgto === 'Repasse da plataforma';
@@ -321,12 +323,19 @@ function efeitosVenda(v) {
       }
     }
   } else {
-    recs.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('receber', r.id)));
+    recs.filter(r => interna || r.status !== 'Pago').forEach(r => ops.push(del('receber', r.id)));
   }
   ops.push(...efeitosConsignado(v));
   return ops;
 }
 const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+/* Retirada (pró-labore dos sócios em produtos) e Sorteio: só baixam o estoque, a custo. Não são venda. */
+const ehCanalInterno = c => /^(retirada|sorteio)$/i.test(String(c || '').trim());
+const ehSorteio = c => /^sorteio$/i.test(String(c || '').trim());
+const ehInterna = v => ehCanalInterno(v?.canal);
+const vendaReal = v => v.status === 'Atendido' && !ehInterna(v);
+const SOCIOS = [{ id: 'socio-michel', nome: 'Michel Méleck Proença' }, { id: 'socio-igor', nome: 'Igor Pacci Érnica' }];
+const ABERTURA = { data: '2026-09-25', banco: 18354.80, jambleDisp: 837.90, jamblePend: 2758.59 };
 
 /* Consignação: produtos de terceiros revendidos sem custo.
    Repasse ao dono = valor vendido − taxa da plataforma (proporcional) − imposto % − comissão % */
@@ -351,7 +360,7 @@ function efeitosConsignado(v) {
   const pags = Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === v.id);
   if (pags.some(r => r.status === 'Pago')) return ops;   // já repassado: não mexe
   pags.forEach(r => ops.push(del('pagar', r.id)));
-  if (v.status !== 'Atendido') return ops;
+  if (v.status !== 'Atendido' || ehInterna(v)) return ops;
   const venc = ehCanalJamble(v.canal) ? addDias(v.data || hoje(), JAMBLE_DIAS) : (v.vencimento || v.data || hoje());
   for (const it of v.itens || []) {
     const c = calcRepasse(v, it); if (!c || c.repasse <= 0) continue;
@@ -491,7 +500,7 @@ function render() {
   const foco = document.activeElement?.id;
   const pos = document.activeElement?.selectionStart;
   R.fn($('#view'));
-  if (foco && $('#' + foco)) { const el = $('#' + foco); el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} }
+  if (foco && !$('#modal').open && $('#' + foco)) { const el = $('#' + foco); el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} }
   window.scrollTo(0, scroll);
   document.title = R.t + ' · Cheel Out Shop ERP';
 }
@@ -510,7 +519,7 @@ function viewPainel(el) {
   actions(`<button class="btn ghost" id="impEtqTop">📄 Importar etiquetas (PDF)</button><a class="btn ghost" href="#/compras">${ICON.plus}Compra</a><button class="btn accent" id="novaVendaTop">${ICON.plus}Nova venda</button>`);
   const d = Store.data;
   const mes = mesAtual();
-  const vendasOk = d.vendas.filter(v => v.status === 'Atendido');
+  const vendasOk = d.vendas.filter(vendaReal);
   const vMes = vendasOk.filter(v => (v.data || '').startsWith(mes));
   const totMes = vMes.reduce((s, v) => s + num(v.total), 0);
   const recAb = d.receber.filter(c => c.status !== 'Pago');
@@ -545,7 +554,7 @@ function viewPainel(el) {
 
   el.innerHTML = barraJamble(true) + `
     <div class="kpis">
-      <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${vMes.some(v => num(v.comissao)) ? ` · comissões <span class="neg">${brl(vMes.reduce((s, v) => s + num(v.comissao), 0))}</span>` : ''}</div></div>
+      <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${comissoesMes(mes) ? ` · comissões <span class="neg">${brl(comissoesMes(mes))}</span>` : ''}</div></div>
       <div class="card kpi green"><div class="lbl">A receber (em aberto)</div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
       <div class="card kpi red"><div class="lbl">A pagar (em aberto)</div><div class="val">${brl(sum(pagAb))}</div><div class="hint">${pagVenc.length ? `<span class="neg">${pagVenc.length} vencida(s) · ${brl(sum(pagVenc))}</span>` : 'Nenhuma vencida'}</div></div>
       <div class="card kpi blue"><div class="lbl">Valor em estoque (custo)</div><div class="val">${brl(valorEst)}</div><div class="hint">${ativos.length} produto(s) · ${baixo.length ? `<span class="neg">${baixo.length} abaixo do mínimo</span>` : 'estoque ok'}</div></div>
@@ -579,7 +588,7 @@ function viewPainel(el) {
       </div>
       <div class="card">
         <h3>Últimas vendas</h3>
-        ${d.vendas.length ? `<ul class="list">${[...d.vendas].sort((a, b) => (b.data + b.numero).localeCompare(a.data + a.numero)).slice(0, 8).map(v => `
+        ${d.vendas.some(v => !ehInterna(v)) ? `<ul class="list">${d.vendas.filter(v => !ehInterna(v)).sort((a, b) => (b.data + b.numero).localeCompare(a.data + a.numero)).slice(0, 8).map(v => `
           <li><span class="l">Nº ${esc(v.numero)} · ${esc(nomeContato(v.clienteId) || 'Consumidor final')}<span class="s">${dataBR(v.data)} · ${esc(v.canal || '')}</span></span><span>${badgeVenda(v.status)} <span class="num strong">${brl(v.total)}</span></span></li>`).join('')}</ul>`
           : '<div class="empty">Nenhuma venda lançada ainda</div>'}
       </div>
@@ -596,8 +605,8 @@ function viewPainel(el) {
 function fluxoCaixaHTML(valorEst) {
   const d = Store.data, mes = UI.fcMes || mesAtual();
   const pago = c => num(c.valorPago || c.valor);
-  const rotuloE = r => r.origem === 'venda' ? (ehCanalJamble(vendaDe(r.origemId)?.canal) ? 'Vendas Jamble (saques)' : 'Vendas') : (r.categoria || 'Outros');
-  const ent = d.receber.filter(c => c.status === 'Pago' && (c.pagoEm || '').startsWith(mes));
+  const rotuloE = r => ehRecJamble(r) ? 'Vendas Jamble (saques)' : r.origem === 'venda' ? 'Vendas' : (r.categoria || 'Outros');
+  const ent = d.receber.filter(c => c.status === 'Pago' && c.origem !== 'abertura' && (c.pagoEm || '').startsWith(mes));
   const sai = d.pagar.filter(c => c.status === 'Pago' && (c.pagoEm || '').startsWith(mes));
   const agrupa = (l, f) => Object.entries(l.reduce((m, c) => { const k = f(c); m[k] = (m[k] || 0) + pago(c); return m; }, {})).sort((a, b) => b[1] - a[1]);
   const tE = r2(ent.reduce((s, c) => s + pago(c), 0)), tS = r2(sai.reduce((s, c) => s + pago(c), 0));
@@ -608,6 +617,14 @@ function fluxoCaixaHTML(valorEst) {
   const consig = r2(d.pagar.filter(c => c.status !== 'Pago' && c.origem === 'consig').reduce((s, c) => s + num(c.valor), 0));
   const pos = r2(caixa + aRec - aPag + valorEst);
   const [yy, mm] = mes.split('-');
+  const abertura = d.receber.filter(c => c.origem === 'abertura' && c.status === 'Pago');
+  const saldoIni = r2(abertura.reduce((s, c) => s + pago(c), 0));
+  // saídas de estoque sem venda (a custo): sorteios = custo da empresa; retiradas = pró-labore dos sócios em produtos
+  const custoSaida = v => r2(Store.data.movimentos.filter(m => m.origemId === v.id && m.tipo === 'saida').reduce((s, m) => s + num(m.quantidade) * num(m.custoUnit), 0));
+  const internas = d.vendas.filter(v => v.status === 'Atendido' && ehInterna(v) && (v.data || '').startsWith(mes));
+  const sorteios = internas.filter(v => ehSorteio(v.canal)), retiradas = internas.filter(v => !ehSorteio(v.canal));
+  const tSort = r2(sorteios.reduce((s, v) => s + custoSaida(v), 0));
+  const porSocio = Object.entries(retiradas.reduce((m, v) => { const k = nomeContato(v.clienteId) || 'Sócio não informado'; m[k] = (m[k] || 0) + custoSaida(v); return m; }, {}));
   const lanc = [...ent.map(c => ({ ...c, _e: 1 })), ...sai.map(c => ({ ...c, _e: 0 }))].sort((a, b) => (a.pagoEm + a.criadoEm).localeCompare(b.pagoEm + b.criadoEm));
   const lista = l => l.length ? l.map(([k, v]) => `<li><span>${esc(k)}</span><b>${brl(v)}</b></li>`).join('') : '<li class="muted"><span>Nada neste mês</span></li>';
   return `
@@ -616,11 +633,16 @@ function fluxoCaixaHTML(valorEst) {
       <div class="fc-grid">
         <div class="fc-col in"><div class="fc-h">Entrou (recebido)</div><ul>${lista(agrupa(ent, rotuloE))}</ul><div class="fc-t">Total <b class="pos">${brl(tE)}</b></div></div>
         <div class="fc-col out"><div class="fc-h">Saiu (pago)</div><ul>${lista(agrupa(sai, c => c.categoria || 'Outros'))}</ul><div class="fc-t">Total <b class="neg">${brl(tS)}</b></div></div>
-        <div class="fc-col res"><div class="fc-h">Resultado de ${MESES[+mm - 1]}/${yy}</div><div class="fc-big ${tE - tS < 0 ? 'neg' : 'pos'}">${brl(tE - tS)}</div><small class="muted">entradas − saídas do mês (só o que foi de fato recebido ou pago)</small></div>
+        <div class="fc-col res"><div class="fc-h">Resultado de ${MESES[+mm - 1]}/${yy}</div><div class="fc-big ${tE - tS < 0 ? 'neg' : 'pos'}">${brl(tE - tS)}</div><small class="muted">entradas − saídas do mês (só o que foi de fato recebido ou pago)</small>${tSort ? `<div class="fc-sort">Sorteios do mês (custo): <b class="neg">−${brl(tSort)}</b><br>Resultado com sorteios: <b class="${tE - tS - tSort < 0 ? 'neg' : 'pos'}">${brl(tE - tS - tSort)}</b></div>` : ''}</div>
       </div>
+      ${internas.length ? `<div class="fc-int">
+        <div class="fc-col"><div class="fc-h">🎁 Sorteios — custo do mês</div><ul>${sorteios.length ? sorteios.map(v => `<li><span>${esc(v.referencia || 'Sorteio nº ' + v.numero)}${nomeContato(v.clienteId) ? ` <small class="muted">· ${esc(nomeContato(v.clienteId))}</small>` : ''}</span><b>${brl(custoSaida(v))}</b></li>`).join('') : '<li class="muted"><span>Nenhum sorteio neste mês</span></li>'}</ul><div class="fc-t">Total <b class="neg">${brl(tSort)}</b></div></div>
+        <div class="fc-col"><div class="fc-h">👤 Retiradas dos sócios (produtos, a custo)</div><ul>${porSocio.length ? porSocio.map(([k, v]) => `<li><span>${esc(k)}</span><b>${brl(v)}</b></li>`).join('') : '<li class="muted"><span>Nenhuma retirada neste mês</span></li>'}</ul><div class="fc-t">Total <b>${brl(porSocio.reduce((s, x) => s + x[1], 0))}</b></div></div>
+        <p class="muted fc-obs">Saídas de estoque sem venda: baixam o estoque a preço de custo, não entram nas vendas nem nas margens e não mexem no caixa.</p>
+      </div>` : ''}
       <div class="section-t">Posição hoje — para conferir os valores</div>
       <div class="fc-pos">
-        <div><span>Caixa acumulado</span><b class="${caixa < 0 ? 'neg' : ''}">${brl(caixa)}</b><small>tudo recebido − tudo pago</small></div>
+        <div><span>Saldo em conta (calculado)</span><b class="${caixa < 0 ? 'neg' : ''}">${brl(caixa)}</b><small>${saldoIni ? `saldo inicial ${brl(saldoIni)} + recebido − pago` : 'tudo recebido − tudo pago'}</small></div>
         <div><span>+ A receber</span><b class="pos">${brl(aRec)}</b><small>em aberto (inclui Jamble)</small></div>
         <div><span>− A pagar</span><b class="neg">${brl(aPag)}</b><small>${consig ? `inclui ${brl(consig)} de repasse consignado` : 'em aberto'}</small></div>
         <div><span>+ Estoque</span><b>${brl(valorEst)}</b><small>a preço de custo</small></div>
@@ -1059,12 +1081,12 @@ function viewPedidos(el, tipo) {
     .filter(p => !mes || (p.data || '').startsWith(mes))
     .filter(p => match(q, p.numero, nomeContato(V ? p.clienteId : p.fornecedorId), p.canal, p.obs, ...p.itens.map(itemNome), nomeContato(V ? p.clienteId : p.fornecedorId) && contato(p.clienteId)?.nick))
     .sort((a, b) => (b.data || '').localeCompare(a.data || '') || num(b.numero) - num(a.numero));
-  const tot = lista.filter(p => p.status !== 'Cancelado').reduce((s, p) => s + num(p.total), 0);
+  const tot = lista.filter(p => p.status !== 'Cancelado' && !(V && ehInterna(p))).reduce((s, p) => s + num(p.total), 0);
   const porPlat = {};
-  if (V) lista.filter(p => p.status !== 'Cancelado').forEach(p => { const k = p.canal || 'Sem plataforma'; porPlat[k] = porPlat[k] || { n: 0, t: 0, c: 0 }; porPlat[k].n++; porPlat[k].t += num(p.total); porPlat[k].c += num(p.comissao); });
+  if (V) lista.filter(p => p.status !== 'Cancelado').forEach(p => { const k = p.canal || 'Sem plataforma'; porPlat[k] = porPlat[k] || { n: 0, t: 0, c: 0, i: ehInterna(p) }; porPlat[k].n++; porPlat[k].t += num(p.total); porPlat[k].c += num(p.comissao); });
   el.innerHTML = `
     ${V && Store.data.vendas.some(v => v.status === 'Pendente') && st !== 'Pendente' ? `<div class="note warn pend-bar"><span><b>${Store.data.vendas.filter(v => v.status === 'Pendente').length} venda(s) pendente(s)</b> de confirmação de produto (importadas do PDF da Jamble). Elas ainda não baixaram o estoque nem lançaram o valor a receber.</span><button class="btn accent sm" id="verPend">Ver pendentes</button></div>` : ''}
-    ${V && Object.keys(porPlat).length ? `<div class="plat-resumo">${Object.entries(porPlat).sort((a, b) => b[1].t - a[1].t).map(([k, s]) => `<div class="card"><div class="lbl">${esc(k)}</div><b>${brl(s.t)}</b><small>${s.n} venda(s) · comissão <span class="${s.c ? 'neg' : ''}">${brl(s.c)}</span></small></div>`).join('')}</div>` : ''}
+    ${V && Object.keys(porPlat).length ? `<div class="plat-resumo">${Object.entries(porPlat).sort((a, b) => b[1].t - a[1].t).map(([k, s]) => `<div class="card ${s.i ? 'interna' : ''}"><div class="lbl">${esc(k)}${s.i ? ' · fora das vendas' : ''}</div><b>${brl(s.t)}</b><small>${s.i ? `${s.n} saída(s) de estoque · a custo` : `${s.n} venda(s) · comissão <span class="${s.c ? 'neg' : ''}">${brl(s.c)}</span>`}</small></div>`).join('')}</div>` : ''}
     <div class="toolbar">
       ${searchBox('q' + key, q, V ? 'Buscar por nº, cliente, produto…' : 'Buscar por nº, fornecedor, produto…')}
       <input type="month" id="m${key}" value="${esc(mes)}" title="Filtrar por mês">
@@ -1075,10 +1097,10 @@ function viewPedidos(el, tipo) {
       <tbody>${lista.length ? lista.map(p => `<tr>
         <td class="strong">${esc(p.numero)}</td><td>${dataBR(p.data)}</td>
         <td class="wrap">${esc(nomeContato(V ? p.clienteId : p.fornecedorId) || (V ? 'Consumidor final' : '—'))}</td>
-        ${V ? `<td>${esc(p.canal)}</td>` : ''}
+        ${V ? `<td>${esc(p.canal)}${V && ehInterna(p) ? `<br><span class="badge ${ehSorteio(p.canal) ? 'amber' : 'gray'}">${ehSorteio(p.canal) ? 'sorteio · custo' : 'retirada sócio'}</span>` : ''}</td>` : ''}
         <td class="r">${qtdFmt(p.itens.reduce((s, i) => s + num(i.qtd), 0))}</td>
-        <td class="muted">${esc(p.formaPgto)}${num(p.parcelas) > 1 ? ` · ${p.parcelas}x` : ''}</td>
-        <td class="r strong">${brl(p.total)}</td>${V ? `<td class="r muted">${num(p.comissao) ? brl(p.comissao) : '—'}</td>` : ''}<td>${badgeVenda(p.status)}</td>
+        <td class="muted">${V && ehInterna(p) ? esc(p.referencia || (ehSorteio(p.canal) ? '' : 'pró-labore em produtos')) : esc(p.formaPgto)}${num(p.parcelas) > 1 ? ` · ${p.parcelas}x` : ''}</td>
+        <td class="r strong ${V && ehInterna(p) ? 'muted' : ''}" ${V && ehInterna(p) ? 'title="Valor a custo — não entra no total de vendas"' : ''}>${brl(p.total)}</td>${V ? `<td class="r muted">${num(p.comissao) ? brl(p.comissao) : '—'}</td>` : ''}<td>${badgeVenda(p.status)}</td>
         <td class="act"><span class="inner">
           ${V && p.status === 'Pendente' ? `<button class="btn accent sm" data-conf="${p.id}" title="Confirmar os produtos desta venda">${ICON.check}Confirmar</button>` : ''}
           ${V && p.status !== 'Atendido' && p.status !== 'Cancelado' && p.status !== 'Pendente' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Baixa no estoque e gera contas a receber">${ICON.check}Faturar</button>` : ''}
@@ -1087,7 +1109,7 @@ function viewPedidos(el, tipo) {
           <button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button>
           ${V ? `<button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button>` : (p.status !== 'Cancelado' ? `<button class="icon-btn del" data-cancel="${p.id}" title="Cancelar pedido">${ICON.undo}</button>` : '')}</span></td>
       </tr>`).join('') : emptyRow(V ? 10 : 8, Store.data[tipo].length ? 'Nada encontrado com esses filtros' : (V ? 'Nenhuma venda ainda. Clique em “Nova venda”.' : 'Nenhum pedido de compra ainda.'), V ? '🛒' : '🚚')}</tbody>
-      ${lista.length ? `<tfoot><tr><td colspan="${V ? 6 : 5}">${lista.length} pedido(s) · total sem cancelados</td><td class="r">${brl(tot)}</td>${V ? `<td class="r" title="Comissões das plataformas no período filtrado">${brl(lista.filter(p => p.status !== 'Cancelado').reduce((s, p) => s + num(p.comissao), 0))}</td>` : ''}<td colspan="2"></td></tr></tfoot>` : ''}
+      ${lista.length ? `<tfoot><tr><td colspan="${V ? 6 : 5}">${lista.length} pedido(s) · total sem cancelados${V ? ', retiradas e sorteios' : ''}</td><td class="r">${brl(tot)}</td>${V ? `<td class="r" title="Comissões das plataformas no período filtrado">${brl(lista.filter(p => p.status !== 'Cancelado').reduce((s, p) => s + num(p.comissao), 0))}</td>` : ''}<td colspan="2"></td></tr></tfoot>` : ''}
     </table></div>`;
   bindSearch('q' + key, 'q' + key);
   $('#m' + key).onchange = e => { UI['m' + key] = e.target.value; render(); };
@@ -1835,39 +1857,60 @@ function viewContas(tipo) {
 
 /* ---------------- Jamble: saldo a receber e saques ---------------- */
 const vendaDe = id => Store.data.vendas.find(v => v.id === id);
+const ehRecJamble = r => r.origem === 'jamble' || (r.origem === 'venda' && ehCanalJamble(vendaDe(r.origemId)?.canal));
+/* data em que o valor fica disponível para saque na Jamble: venda + 20 dias (saldos de abertura: o vencimento) */
+const liberaJamble = r => { if (r.origem === 'venda') { const d = vendaDe(r.origemId)?.data; if (d) return addDias(d, JAMBLE_DIAS); } return r.vencimento || hoje(); };
+const taxasSaqueMes = mes => r2(Store.data.saques.filter(x => (x.data || '').startsWith(mes)).reduce((s, x) => s + num(x.taxa), 0));
+const comissoesMes = mes => r2(Store.data.vendas.filter(v => vendaReal(v) && (v.data || '').startsWith(mes)).reduce((s, v) => s + num(v.comissao), 0) + taxasSaqueMes(mes));
 function jambleInfo() {
-  const abertos = Store.data.receber.filter(r => r.status !== 'Pago' && r.origem === 'venda' && ehCanalJamble(vendaDe(r.origemId)?.canal))
-    .sort((a, b) => ((a.vencimento || '') + (a.criadoEm || '')).localeCompare((b.vencimento || '') + (b.criadoEm || '')));
-  const dataVenda = r => vendaDe(r.origemId)?.data || '';
-  const atrasados = abertos.filter(r => { const d = dataVenda(r) ? addDias(dataVenda(r), JAMBLE_DIAS) : r.vencimento; return d && d < hoje(); });
+  const abertos = Store.data.receber.filter(r => r.status !== 'Pago' && ehRecJamble(r))
+    .sort((a, b) => (liberaJamble(a) + (a.criadoEm || '')).localeCompare(liberaJamble(b) + (b.criadoEm || '')));
+  const disp = abertos.filter(r => liberaJamble(r) <= hoje());
+  const atrasados = abertos.filter(r => liberaJamble(r) < hoje());
   const pend = Store.data.vendas.filter(v => v.status === 'Pendente' && ehCanalJamble(v.canal));
   const saques = Store.data.saques.filter(x => ehCanalJamble(x.plataforma)).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')));
   const soma = l => r2(l.reduce((s, r) => s + num(r.valor), 0));
-  return { abertos, atrasados, pend, saques, saldo: soma(abertos), saldoAtrasado: soma(atrasados), pendBruto: r2(pend.reduce((s, v) => s + num(v.total) - num(v.comissao), 0)), dataVenda };
+  const saldo = soma(abertos), disponivel = soma(disp);
+  return { abertos, disp, atrasados, pend, saques, saldo, disponivel, aLiberar: r2(saldo - disponivel), saldoAtrasado: soma(atrasados), pendBruto: r2(pend.reduce((s, v) => s + num(v.total) - num(v.comissao), 0)) };
 }
 function formSaqueJamble() {
   const J = jambleInfo();
   if (!J.abertos.length) return toast('Não há valores da Jamble em aberto para sacar', 'err');
   Modal.open({
     title: 'Registrar saque da Jamble', small: true, submit: 'Registrar saque',
-    body: `<div class="saque-saldo"><span>Saldo da Jamble a receber</span><b>${brl(J.saldo)}</b><small>${J.abertos.length} lançamento(s) em aberto${J.atrasados.length ? ` · <span class="neg">${brl(J.saldoAtrasado)} com mais de ${JAMBLE_DIAS} dias</span>` : ''}</small></div>
+    body: `<div class="saque-saldo"><span>Saldo da Jamble a receber</span><b>${brl(J.saldo)}</b><small>Disponível para saque: <b class="pos">${brl(J.disponivel)}</b> · a liberar: <b>${brl(J.aLiberar)}</b></small></div>
       ${J.pend.length ? `<div class="note warn">${J.pend.length} venda(s) da Jamble ainda <b>pendente(s) de confirmação</b> (${brl(J.pendBruto)} líquido) não entram no saldo. Confirme-as em Vendas para que entrem.</div>` : ''}
       <div class="grid g2" style="margin-top:12px">
         ${field('Data do saque', inp('data', hoje(), 'type="date" required'))}
-        ${field('Valor sacado (R$) *', inp('valor', '', 'inputmode="decimal" required placeholder="0,00" id="sqValor"'))}
+        ${field('Valor sacado da Jamble (R$) *', inp('valor', '', 'inputmode="decimal" required placeholder="0,00" id="sqValor"'))}
+        ${field('Taxa de saque (R$)', inp('taxa', '', 'inputmode="decimal" placeholder="0,00" id="sqTaxa"'))}
+        <label class="f">Antecipação<span class="check-line"><input type="checkbox" name="antecipar" id="sqAnt"> antecipei valores a liberar</span></label>
+        <div id="sqAntBox" hidden class="span2">${field('Taxa de antecipação (R$) — 1% do valor antecipado', inp('antecipacao', '', 'inputmode="decimal" placeholder="0,00" id="sqAntV"'))}</div>
       </div>
       ${field('Observação', inp('obs', '', 'placeholder="opcional"'))}
       <div class="note" id="sqPrev" style="margin-top:12px"></div>`,
     onOpen: body => {
-      const prev = () => { const v = r2($('#sqValor').value); $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo em aberto (${brl(J.saldo)}).</span>` : v > 0 ? `Saldo depois do saque: <b>${brl(J.saldo - v)}</b>. O valor dá baixa nas vendas mais antigas primeiro.` : 'Informe o valor que você transferiu da Jamble para a conta.'; };
-      $('#sqValor').addEventListener('input', prev); prev();
+      let antManual = false;
+      const prev = () => {
+        const v = r2($('#sqValor').value), ant = $('#sqAnt').checked;
+        $('#sqAntBox', body).hidden = !ant;
+        if (ant && !antManual) $('#sqAntV').value = dec(Math.max(0, v - J.disponivel) * 0.01);
+        const tx = r2(num($('#sqTaxa').value) + (ant ? num($('#sqAntV').value) : 0));
+        $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo em aberto (${brl(J.saldo)}).</span>`
+          : v > 0 ? `Cai na conta: <b>${brl(v - tx)}</b>${tx ? ` (taxas ${brl(tx)} lançadas como comissão Jamble)` : ''}. Saldo na Jamble depois do saque: <b>${brl(J.saldo - v)}</b>.${v > J.disponivel + 0.004 && !ant ? '<br><span class="neg">O valor passa do disponível — marque “antecipação” se foi antecipado.</span>' : ''}`
+          : 'Informe o valor que saiu da Jamble (antes da taxa de saque). Ele dá baixa nas vendas mais antigas primeiro.';
+      };
+      $('#sqAntV').addEventListener('input', () => { antManual = true; prev(); });
+      ['#sqValor', '#sqTaxa'].forEach(q => $(q).addEventListener('input', prev)); $('#sqAnt').addEventListener('change', prev); prev();
     },
     onSubmit: fd => {
-      const valor = r2(fd.valor);
+      const valor = r2(fd.valor), antecip = fd.antecipar ? r2(fd.antecipacao) : 0, taxa = r2(num(fd.taxa) + antecip);
       if (valor <= 0) { toast('Informe o valor do saque', 'err'); return false; }
       if (valor > J.saldo + 0.004) { toast(`O saque (${brl(valor)}) é maior que o saldo em aberto da Jamble (${brl(J.saldo)})`, 'err'); return false; }
-      const sq = { id: uid(), data: fd.data || hoje(), plataforma: 'Jamble', valor, obs: fd.obs || '', criadoEm: agora() };
+      if (taxa >= valor) { toast('A taxa não pode ser maior que o saque', 'err'); return false; }
+      const sq = { id: uid(), data: fd.data || hoje(), plataforma: 'Jamble', valor, taxa, antecipacao: antecip, obs: fd.obs || '', criadoEm: agora() };
       const ops = [up('saques', sq)], marca = `saque:${sq.id}`;
+      if (taxa > 0) ops.push(up('pagar', { id: 'sqtx-' + sq.id, descricao: 'Taxa de saque Jamble' + (antecip ? ` (inclui antecipação ${brl(antecip)})` : ''), contatoId: '', categoria: 'Comissão Jamble', vencimento: sq.data, valor: taxa, status: 'Pago', pagoEm: sq.data, valorPago: taxa, origem: 'saque', origemId: sq.id, obs: `Saque de ${brl(valor)}`, criadoEm: agora() }));
       let resto = valor;
       for (const r of J.abertos) {
         if (resto <= 0.004) break;
@@ -1882,7 +1925,7 @@ function formSaqueJamble() {
         }
       }
       Store.commit(ops);
-      toast(`Saque de ${brl(valor)} registrado · saldo Jamble ${brl(J.saldo - valor)}`, 'ok');
+      toast(`Saque de ${brl(valor)} registrado${taxa ? ` · taxa ${brl(taxa)}` : ''} · saldo Jamble ${brl(J.saldo - valor)}`, 'ok');
     },
   });
 }
@@ -1891,16 +1934,17 @@ function historicoSaques() {
   Modal.open({
     title: 'Saques da Jamble',
     body: J.saques.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table>
-      <thead><tr><th>Data</th><th class="r">Valor</th><th class="r">Vendas baixadas</th><th>Observação</th><th></th></tr></thead>
-      <tbody>${J.saques.map(x => `<tr><td>${dataBR(x.data)}</td><td class="r strong pos">${brl(x.valor)}</td><td class="r">${Store.data.receber.filter(r => String(r.obs || '').includes('saque:' + x.id)).length}</td><td class="muted wrap">${esc(x.obs)}</td>
+      <thead><tr><th>Data</th><th class="r">Sacado</th><th class="r">Taxas</th><th class="r">Caiu na conta</th><th class="r">Vendas baixadas</th><th>Observação</th><th></th></tr></thead>
+      <tbody>${J.saques.map(x => `<tr><td>${dataBR(x.data)}</td><td class="r strong">${brl(x.valor)}</td><td class="r neg">${num(x.taxa) ? brl(x.taxa) : '—'}${num(x.antecipacao) ? `<br><small>antecip. ${brl(x.antecipacao)}</small>` : ''}</td><td class="r strong pos">${brl(num(x.valor) - num(x.taxa))}</td><td class="r">${Store.data.receber.filter(r => String(r.obs || '').includes('saque:' + x.id)).length}</td><td class="muted wrap">${esc(x.obs)}</td>
         <td class="act"><button type="button" class="btn ghost sm" data-desfaz="${esc(x.id)}">${ICON.undo}Desfazer</button></td></tr>`).join('')}</tbody>
-      <tfoot><tr><td>Total sacado</td><td class="r">${brl(J.saques.reduce((s, x) => s + num(x.valor), 0))}</td><td colspan="3"></td></tr></tfoot></table></div>`
+      <tfoot><tr><td>Total</td><td class="r">${brl(J.saques.reduce((s, x) => s + num(x.valor), 0))}</td><td class="r">${brl(J.saques.reduce((s, x) => s + num(x.taxa), 0))}</td><td class="r">${brl(J.saques.reduce((s, x) => s + num(x.valor) - num(x.taxa), 0))}</td><td colspan="3"></td></tr></tfoot></table></div>`
       : '<div class="empty">Nenhum saque registrado ainda.</div>',
     onOpen: body => $$('[data-desfaz]', body).forEach(b => b.onclick = () => {
       const x = Store.data.saques.find(s => s.id === b.dataset.desfaz), marca = 'saque:' + x.id;
       Modal.close();
-      setTimeout(() => confirmar(`Desfazer o saque de ${brl(x.valor)} de ${dataBR(x.data)}? As vendas voltam para “em aberto”.`, () => {
+      setTimeout(() => confirmar(`Desfazer o saque de ${brl(x.valor)} de ${dataBR(x.data)}? As vendas voltam para “em aberto” e a taxa é removida.`, () => {
         const ops = [del('saques', x.id)];
+        Store.data.pagar.filter(r => r.origem === 'saque' && r.origemId === x.id).forEach(r => ops.push(del('pagar', r.id)));
         Store.data.receber.filter(r => String(r.obs || '').includes(marca)).forEach(r => ops.push(up('receber', { ...r, status: 'Aberto', pagoEm: '', valorPago: '', obs: String(r.obs).split(' · ').filter(t => t !== marca).join(' · ') })));
         return Store.commit(ops).then(() => toast('Saque desfeito', 'ok'));
       }, 'Desfazer'), 50);
@@ -1912,8 +1956,8 @@ function barraJamble(compacto) {
   if (!J.abertos.length && !J.saques.length && !J.pend.length) return '';
   const ult = J.saques[0];
   return `<div class="jamble-bar ${J.atrasados.length ? 'alerta' : ''}">
-    <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>${J.abertos.length} venda(s) em aberto · repasse em ${JAMBLE_DIAS} dias${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
-    <div class="jb-alert">${J.atrasados.length ? `⚠ <b>${brl(J.saldoAtrasado)}</b> em ${J.atrasados.length} venda(s) com mais de ${JAMBLE_DIAS} dias sem receber` : `✓ nada passou de ${JAMBLE_DIAS} dias`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
+    <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>disponível <b class="pos">${brl(J.disponivel)}</b> · a liberar <b>${brl(J.aLiberar)}</b>${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
+    <div class="jb-alert">${J.atrasados.length ? `⚠ <b>${brl(J.saldoAtrasado)}</b> já passou de ${JAMBLE_DIAS} dias (${J.atrasados.length} lançamento(s)) — disponível para saque` : J.disponivel ? `✓ ${brl(J.disponivel)} disponível para saque` : `✓ nada passou de ${JAMBLE_DIAS} dias`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
     <div class="jb-act"><button class="btn accent sm" data-saque>${ICON.down}Registrar saque</button>${compacto ? '' : `<button class="btn ghost sm" data-hist-saque>Histórico</button>`}${compacto && J.atrasados.length ? `<a class="btn ghost sm" href="#/receber" data-ver-atraso>Ver vendas</a>` : ''}</div>
   </div>`;
 }
@@ -1982,7 +2026,7 @@ function viewContatos(el, tipo) {
     .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade, c.nick && '@' + c.nick)).sort((a, b) => a.nome.localeCompare(b.nome));
   // resumo de movimento por contato
   const mov = {};
-  (F ? Store.data.compras : Store.data.vendas).filter(p => p.status !== 'Cancelado').forEach(p => {
+  (F ? Store.data.compras : Store.data.vendas).filter(p => p.status !== 'Cancelado' && (F || !ehInterna(p))).forEach(p => {
     const id = F ? p.fornecedorId : p.clienteId; if (!id) return;
     mov[id] = mov[id] || { n: 0, t: 0, ult: '' }; mov[id].n++; mov[id].t += num(p.total); if ((p.data || '') > mov[id].ult) mov[id].ult = p.data;
   });
@@ -2100,6 +2144,7 @@ const PLAT_PADRAO = [
   { id: 'pl-whatsapp', nome: 'WhatsApp', comissao: 0, ativo: 'sim' },
   { id: 'pl-jamble', nome: 'Jamble', comissao: 10, ativo: 'sim' },
   { id: 'pl-retirada', nome: 'Retirada', comissao: 0, ativo: 'sim' },
+  { id: 'pl-sorteio', nome: 'Sorteio', comissao: 0, ativo: 'sim' },
 ];
 const plataformas = () => (Store.data.plataformas && Store.data.plataformas.length ? Store.data.plataformas : PLAT_PADRAO).slice().sort((a, b) => a.nome.localeCompare(b.nome));
 const plataformasAtivas = () => plataformas().filter(p => p.ativo !== 'nao');
@@ -2171,7 +2216,7 @@ function abrirPDV(v) {
       <div class="grid g4 pdv-top">
         <label class="f">Nº da venda<div class="num-fixo">${esc(numeroPrevisto)}${novo ? '<small>confirmado ao salvar</small>' : ''}</div></label>
         ${field('Data', inp('data', v.data, 'type="date" required'))}
-        <label class="f">Cliente
+        <label class="f" id="lblCli"><span id="lblCliT">Cliente</span>
           <div class="ac" id="acCli">
             <input class="ac-txt" autocomplete="off" placeholder="Digite 3 letras do nome ou o @nick…" value="${esc(cli?.nome || '')}">
             <input type="hidden" name="contatoId" value="${esc(v.clienteId || '')}">
@@ -2179,6 +2224,11 @@ function abrirPDV(v) {
           </div>
         </label>
         ${field('Plataforma de venda', `<select name="canal" id="pdvPlat">${opt(plats, v.canal)}</select>`)}
+      </div>
+      <div class="pdv-interno" id="pdvInt" hidden>
+        <div id="intRet">${field('Sócio que retirou *', `<select name="socioId" id="pdvSocio">${opt(SOCIOS.map(x => [x.id, x.nome]), SOCIOS.some(x => x.id === v.clienteId) ? v.clienteId : '', 'Escolha o sócio…')}</select>`)}</div>
+        <div id="intSor">${field('Identificação do sorteio *', inp('referencia', v.referencia || '', 'id="pdvRef" placeholder="ex.: Sorteio live 25/09 — seguidores"'))}</div>
+        <p class="muted" id="intTxt"></p>
       </div>
       <div class="inline-new" id="pnlCli" hidden>
         <div class="inline-head"><b>Novo cliente</b><span class="muted">cadastro rápido — já fica selecionado nesta venda</span></div>
@@ -2240,6 +2290,18 @@ function abrirPDV(v) {
     onOpen: body => {
       const cart = $('#pdvCart', body), qtd = $('#pdvQtd', body), unit = $('#pdvUnit', body), prodTxt = $('#pdvProd', body);
       const total = () => r2(carrinho.reduce((s, i) => s + num(i.qtd) * num(i.valor), 0) - num($('#pdvDesc', body).value));
+      const interno = () => ehCanalInterno($('#pdvPlat', body).value);
+      const modoInterno = (trocou) => {
+        const i = interno(), sor = i && ehSorteio($('#pdvPlat', body).value);
+        $('#pdvInt', body).hidden = !i; $('#intRet', body).hidden = !i || sor; $('#intSor', body).hidden = !sor;
+        $('#lblCli', body).style.visibility = i && !sor ? 'hidden' : ''; $('#lblCliT', body).textContent = sor ? 'Ganhador (opcional)' : 'Cliente';
+        $('#intTxt', body).textContent = sor ? 'Sorteio: baixa o estoque a preço de custo e entra como custo da empresa no mês. Não conta como venda.' : 'Retirada de sócio (pró-labore em produtos): baixa o estoque a preço de custo, fica registrada no nome do sócio e não entra nas vendas nem nas margens.';
+        $('.pdv-bottom .grid', body).style.display = i ? 'none' : '';
+        unit.readOnly = i;
+        if (i) $('#pdvDesc', body).value = '';
+        if (trocou) carrinho.forEach(it => { const p = produto(it.produtoId); if (!p) return; if (i) { if (it._preco == null) it._preco = it.valor; it.valor = num(p.custo); } else { it.valor = it._preco ?? num(p.preco); delete it._preco; } });
+        if (atual) { unit.value = dec(i ? atual.custo : atual.preco); subtotal(); }
+      };
       const pintarCarrinho = () => {
         cart.innerHTML = carrinho.length ? carrinho.map((i, k) => { const p = produto(i.produtoId); return `<tr>
           <td class="c-foto">${fotoHTML(p, 'cart-foto')}</td><td class="wrap"><b>${esc(p ? p.nome : '(produto excluído)')}</b><br><small class="muted">${esc(p?.sku || '')}</small></td>
@@ -2248,9 +2310,9 @@ function abrirPDV(v) {
           <td class="act"><button type="button" class="icon-btn del" data-rm="${k}" title="Remover">${ICON.del}</button></td></tr>`; }).join('')
           : '<tr><td colspan="6"><div class="empty" style="padding:22px">Nenhum produto na venda ainda. Busque acima e clique em <b>Adicionar</b>.</div></td></tr>';
         const n = carrinho.reduce((s, i) => s + num(i.qtd), 0), t = total();
-        const pl = plataformaPorNome($('#pdvPlat', body).value), pct = num(pl?.comissao);
+        const pl = plataformaPorNome($('#pdvPlat', body).value), pct = interno() ? 0 : num(pl?.comissao);
         $('#pdvTotal', body).textContent = brl(t);
-        $('#pdvResumo', body).innerHTML = `${qtdFmt(n)} item(ns)${pct ? ` · comissão ${esc(pl.nome)} ${fmtPct(pct)}%: <b>${brl(t * pct / 100)}</b>` : ''}`;
+        $('#pdvResumo', body).innerHTML = interno() ? `${qtdFmt(n)} item(ns) · <b>valor a custo</b> — não entra nas vendas` : `${qtdFmt(n)} item(ns)${pct ? ` · comissão ${esc(pl.nome)} ${fmtPct(pct)}%: <b>${brl(t * pct / 100)}</b>` : ''}`;
         const cred = $('#pdvForma', body).value === 'Cartão de crédito';
         $('#pdvParc', body).disabled = !cred; if (!cred) $('#pdvParc', body).value = 1;
       };
@@ -2259,7 +2321,7 @@ function abrirPDV(v) {
         atual = p;
         $('#acProd', body).dataset.id = p.id;
         $('#pdvFoto', body).innerHTML = fotoHTML(p, 'pdv-img');
-        unit.value = dec(p.preco); qtd.value = 1; subtotal();
+        unit.value = dec(interno() ? p.custo : p.preco); qtd.value = 1; subtotal();
         const s = saldos()[p.id] || 0;
         $('#pdvEst', body).innerHTML = `Estoque: <b class="${s <= 0 ? 'neg' : ''}">${qtdFmt(s)} ${esc(p.unidade || 'un')}</b>${p.sku ? ' · ' + esc(p.sku) : ''}`;
         setTimeout(() => { qtd.focus(); qtd.select(); }, 30);
@@ -2281,7 +2343,9 @@ function abrirPDV(v) {
       cart.addEventListener('change', e => { const i = e.target.closest('.cart-qtd'); if (i) { const q = num(i.value); if (q > 0) carrinho[+i.dataset.k].qtd = q; pintarCarrinho(); } });
       cart.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.closest('.cart-qtd')) { e.preventDefault(); e.target.blur(); } });
       ['#pdvDesc'].forEach(s => $(s, body).oninput = pintarCarrinho);
-      ['#pdvForma', '#pdvPlat'].forEach(s => $(s, body).onchange = pintarCarrinho);
+      $('#pdvForma', body).onchange = pintarCarrinho;
+      $('#pdvPlat', body).onchange = () => { modoInterno(true); pintarCarrinho(); };
+      modoInterno();
 
       // ---- cliente
       const pnlC = $('#pnlCli', body);
@@ -2344,14 +2408,22 @@ function abrirPDV(v) {
       const bruto = carrinho.reduce((s, i) => s + num(i.qtd) * num(i.valor), 0);
       const total = r2(bruto - num(fd.desconto));
       if (total < 0) { toast('O desconto é maior que o valor da venda', 'err'); return false; }
-      const pl = plataformaPorNome(fd.canal), pct = num(pl?.comissao);
-      const forma = fd.formaPgto;
+      const interna = ehCanalInterno(fd.canal), sor = interna && ehSorteio(fd.canal);
+      if (interna) {
+        if (!sor && !fd.socioId) { toast('Escolha qual sócio fez a retirada', 'err'); $('#pdvSocio', body).focus(); return false; }
+        if (sor && !String(fd.referencia || '').trim()) { toast('Informe a identificação do sorteio', 'err'); $('#pdvRef', body).focus(); return false; }
+        const cons = carrinho.find(i => produto(i.produtoId)?.consigId);
+        if (cons) { toast(`“${nomeProduto(cons.produtoId)}” é consignado (de terceiro) e não pode sair como ${sor ? 'sorteio' : 'retirada'}`, 'err'); return false; }
+      }
+      const pl = plataformaPorNome(fd.canal), pct = interna ? 0 : num(pl?.comissao);
+      const forma = interna ? '' : fd.formaPgto;
       const rec = {
         id: v.id || uid(),
         numero: novo ? String(proxNumero(Store.data.vendas)) : v.numero,
-        data: fd.data || hoje(), clienteId: fd.contatoId || '', canal: fd.canal, status: 'Atendido',
-        itens: carrinho.map(i => ({ produtoId: i.produtoId, qtd: num(i.qtd), valor: r2(i.valor) })),
-        frete: 0, desconto: r2(fd.desconto), total, formaPgto: forma,
+        data: fd.data || hoje(), clienteId: interna && !sor ? fd.socioId : (fd.contatoId || ''), canal: fd.canal, status: 'Atendido',
+        itens: carrinho.map(i => ({ produtoId: i.produtoId, qtd: num(i.qtd), valor: interna ? num(produto(i.produtoId)?.custo) : r2(i.valor) })),
+        frete: 0, desconto: interna ? 0 : r2(fd.desconto), total: interna ? totalItens(carrinho.map(i => ({ qtd: i.qtd, valor: num(produto(i.produtoId)?.custo) }))) : total, formaPgto: forma,
+        referencia: sor ? String(fd.referencia).trim() : '',
         parcelas: forma === 'Cartão de crédito' ? Math.max(1, Math.floor(num(fd.parcelas)) || 1) : 1,
         vencimento: ehCanalJamble(fd.canal) ? addDias(fd.data || hoje(), JAMBLE_DIAS) : forma === 'Cartão de crédito' || forma === 'Boleto' ? addDias(fd.data || hoje(), 30) : (fd.data || hoje()),
         obs: fd.obs || '', criadoEm: v.criadoEm || agora(),
@@ -2360,7 +2432,7 @@ function abrirPDV(v) {
       const salvar = () => {
         Store.commit([up('vendas', rec), ...efeitosVenda(rec)]);
         $('#modal').classList.remove('pdv-modal');
-        toast(novo ? `Venda nº ${rec.numero} finalizada — ${brl(total)}` : 'Venda atualizada', 'ok');
+        toast(interna ? `${sor ? 'Sorteio' : 'Retirada de ' + nomeContato(rec.clienteId)} registrado — ${brl(rec.total)} a custo (fora das vendas)` : novo ? `Venda nº ${rec.numero} finalizada — ${brl(total)}` : 'Venda atualizada', 'ok');
       };
       const falta = faltaEstoque(rec);
       if (falta) { Modal.close(); setTimeout(() => confirmar('Finalizar mesmo assim?' + falta, salvar, 'Finalizar'), 50); return false; }
@@ -2981,6 +3053,71 @@ function backupLocalDiario(forcar) {
   }
   return false;
 }
+/* ---------------- v19: sócios, Sorteio, saldos de abertura e retiradas antigas ---------------- */
+const LS_ABERT = 'cheel_erp_abertura_v19';
+function saldosAbertura() {
+  const g = id => Store.data.receber.find(r => r.id === id);
+  return { banco: g('abertura-banco'), disp: g('abertura-jamble-disp'), pend: g('abertura-jamble-pend') };
+}
+function migracaoV19() {
+  const ops = [];
+  const add = o => { ops.push(o); Store.apply([o]); };
+  for (const sc of SOCIOS) if (!contato(sc.id)) add(up('contatos', { id: sc.id, tipo: 'Sócio', nome: sc.nome, documento: '', telefone: '', email: '', cidade: '', uf: '', obs: 'Sócio — retiradas de produtos (pró-labore)', criadoEm: agora(), fantasia: '', cep: '', endereco: '', nick: '' }));
+  garantirPlataformas().forEach(add);
+  if (!Store.data.plataformas.some(x => ehSorteio(x.nome))) add(up('plataformas', { id: 'pl-sorteio', nome: 'Sorteio', comissao: 0, ativo: 'sim', criadoEm: agora() }));
+  let feito = false; try { feito = !!localStorage.getItem(LS_ABERT); } catch (e) {}
+  const A = saldosAbertura();
+  if (!feito && !A.banco && !A.disp && !A.pend) {
+    const base = { contatoId: '', status: 'Aberto', pagoEm: '', valorPago: '', obs: 'Saldo informado na implantação do sistema', criadoEm: agora() };
+    add(up('receber', { ...base, id: 'abertura-banco', descricao: 'Saldo inicial da conta bancária', categoria: 'Saldo inicial', vencimento: ABERTURA.data, valor: ABERTURA.banco, status: 'Pago', pagoEm: ABERTURA.data, valorPago: ABERTURA.banco, origem: 'abertura', origemId: '' }));
+    add(up('receber', { ...base, id: 'abertura-jamble-disp', descricao: 'Jamble — saldo disponível para saque (abertura)', categoria: 'Vendas', vencimento: ABERTURA.data, valor: ABERTURA.jambleDisp, origem: 'jamble', origemId: '' }));
+    add(up('receber', { ...base, id: 'abertura-jamble-pend', descricao: 'Jamble — valores pendentes de liberação (abertura)', categoria: 'Vendas', vencimento: addDias(ABERTURA.data, JAMBLE_DIAS), valor: ABERTURA.jamblePend, origem: 'jamble', origemId: '' }));
+  }
+  try { localStorage.setItem(LS_ABERT, '1'); } catch (e) {}
+  // retiradas lançadas antes como venda: passam a valer a custo e sem valor a receber
+  for (const v of Store.data.vendas.filter(x => ehInterna(x) && Store.data.receber.some(r => r.origem === 'venda' && r.origemId === x.id))) {
+    const itens = v.itens.map(i => ({ ...i, valor: num(produto(i.produtoId)?.custo) }));
+    const nv = { ...v, itens, desconto: 0, total: totalItens(itens), comissao: 0, comissaoPct: 0, formaPgto: '', parcelas: 1 };
+    add(up('vendas', nv)); efeitosVenda(nv).forEach(add);
+  }
+  if (ops.length) Store.commit(ops).then(() => render());
+}
+function formSaldosAbertura() {
+  const A = saldosAbertura();
+  const ed = r => !r || r.status !== 'Pago' || r.id === 'abertura-banco';
+  Modal.open({
+    title: 'Saldos de abertura', small: true, submit: 'Salvar saldos',
+    body: `<div class="grid">
+      ${field('Data dos saldos', inp('data', A.banco?.pagoEm || ABERTURA.data, 'type="date" required'))}
+      ${field('Saldo na conta do banco (R$)', inp('banco', dec(A.banco?.valor ?? ''), 'inputmode="decimal" placeholder="0,00"'))}
+      ${field('Jamble — disponível para saque (R$)', inp('disp', dec(A.disp?.valor ?? ''), `inputmode="decimal" placeholder="0,00" ${ed(A.disp) ? '' : 'disabled'}`))}
+      ${field('Jamble — pendente de liberação (R$)', inp('pend', dec(A.pend?.valor ?? ''), `inputmode="decimal" placeholder="0,00" ${ed(A.pend) ? '' : 'disabled'}`))}
+      <p class="muted" style="margin:0;font-size:13px;font-weight:700">Esses valores são o ponto de partida: o saldo em conta do Painel soma o saldo do banco com tudo que for recebido e desconta o que for pago depois. Os saldos da Jamble entram como valor a receber (os saques dão baixa neles primeiro).</p>
+    </div>`,
+    onSubmit: fd => {
+      const ops = [], data = fd.data || ABERTURA.data;
+      const base = { contatoId: '', obs: 'Saldo informado na implantação do sistema', origemId: '' };
+      const salvar = (id, r, extra) => { const v = r2(fd[extra.k]); if (fd[extra.k] === undefined) return; if (!v) { if (r) ops.push(del('receber', id)); return; } ops.push(up('receber', { ...base, criadoEm: agora(), ...(r || {}), ...extra.rec(v), id })); };
+      salvar('abertura-banco', A.banco, { k: 'banco', rec: v => ({ descricao: 'Saldo inicial da conta bancária', categoria: 'Saldo inicial', vencimento: data, valor: v, status: 'Pago', pagoEm: data, valorPago: v, origem: 'abertura' }) });
+      salvar('abertura-jamble-disp', A.disp, { k: 'disp', rec: v => ({ descricao: 'Jamble — saldo disponível para saque (abertura)', categoria: 'Vendas', vencimento: data, valor: v, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'jamble' }) });
+      salvar('abertura-jamble-pend', A.pend, { k: 'pend', rec: v => ({ descricao: 'Jamble — valores pendentes de liberação (abertura)', categoria: 'Vendas', vencimento: addDias(data, JAMBLE_DIAS), valor: v, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'jamble' }) });
+      Store.commit(ops); toast('Saldos salvos', 'ok');
+    },
+  });
+}
+function cardSaldos() {
+  const A = saldosAbertura(), v = r => r ? brl(r.valor) + (r.status === 'Pago' && r.id !== 'abertura-banco' ? ' <span class="badge green">sacado</span>' : '') : '—';
+  return `
+    <div class="card" style="max-width:860px;margin-bottom:16px">
+      <h3 style="justify-content:space-between">Saldos de abertura <button class="btn ghost sm" id="edSaldos">${ICON.edit}Editar</button></h3>
+      <ul class="list">
+        <li><span class="l">Conta do banco<span class="s">saldo em ${dataBR(A.banco?.pagoEm || ABERTURA.data)} — base do saldo em conta do Painel</span></span><b>${v(A.banco)}</b></li>
+        <li><span class="l">Jamble — disponível para saque</span><b>${v(A.disp)}</b></li>
+        <li><span class="l">Jamble — pendente de liberação<span class="s">libera em ${dataBR(A.pend?.vencimento || '')}</span></span><b>${v(A.pend)}</b></li>
+      </ul>
+    </div>`;
+}
+
 async function backupAutomatico() {
   backupLocalDiario();
   if (Store.online) { try { await Store.api({ action: 'backupAuto' }); } catch (e) { /* script antigo ou sem internet: tenta de novo no próximo login */ } }
@@ -3063,13 +3200,14 @@ function viewConfig(el) {
       <h3 style="justify-content:space-between">Plataformas de venda <button class="btn ghost sm" id="novaPlat">${ICON.plus}Nova plataforma</button></h3>
       <div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table>
         <thead><tr><th>Plataforma</th><th class="r">Comissão</th><th class="r">Vendas no mês</th><th class="r">Comissão no mês</th><th>Situação</th><th></th></tr></thead>
-        <tbody>${pls.map(pl => { const vs = Store.data.vendas.filter(v => v.canal === pl.nome && v.status !== 'Cancelado' && (v.data || '').startsWith(mesAtual())); return `<tr>
-          <td class="strong">${esc(pl.nome)}</td><td class="r">${fmtPct(num(pl.comissao))}%</td>
-          <td class="r">${brl(vs.reduce((s, v) => s + num(v.total), 0))}</td><td class="r neg">${brl(vs.reduce((s, v) => s + num(v.comissao), 0))}</td>
+        <tbody>${pls.map(pl => { const vs = Store.data.vendas.filter(v => v.canal === pl.nome && v.status !== 'Cancelado' && (v.data || '').startsWith(mesAtual())); const int = ehCanalInterno(pl.nome); return `<tr>
+          <td class="strong">${esc(pl.nome)}${int ? `<br><small class="muted">${ehSorteio(pl.nome) ? 'brinde a clientes · custo da empresa' : 'pró-labore dos sócios em produtos'}</small>` : ''}</td><td class="r">${int ? '—' : fmtPct(num(pl.comissao)) + '%'}</td>
+          <td class="r">${int ? `<span class="muted" title="a custo, fora das vendas">${brl(vs.reduce((s, v) => s + num(v.total), 0))} (custo)</span>` : brl(vs.reduce((s, v) => s + num(v.total), 0))}</td><td class="r neg">${brl(vs.reduce((s, v) => s + num(v.comissao), 0) + (ehCanalJamble(pl.nome) ? taxasSaqueMes(mesAtual()) : 0))}</td>
           <td>${pl.ativo === 'nao' ? '<span class="badge gray">inativa</span>' : '<span class="badge green">ativa</span>'}</td>
           <td class="act"><button class="icon-btn" data-plat="${esc(pl.id)}" title="Editar">${ICON.edit}</button></td></tr>`; }).join('')}</tbody>
       </table></div>
     </div>
+    ${cardSaldos()}
     ${cardConsignacao()}
     <!--cfg-->`
   + `
@@ -3089,6 +3227,7 @@ function viewConfig(el) {
     </div>`;
   $('#novaPlat', el).onclick = () => formPlataforma();
   $('#novoConsig', el).onclick = () => formConsignante();
+  $('#edSaldos', el).onclick = formSaldosAbertura;
   $$('[data-consig]', el).forEach(b => b.onclick = () => formConsignante(contato(b.dataset.consig)));
   $$('[data-plat]', el).forEach(b => b.onclick = () => formPlataforma(plataformas().find(p => p.id === b.dataset.plat)));
   $$('[data-snap]', el).forEach(b => b.onclick = () => { const s = snaps[+b.dataset.snap]; baixar(`cheeloutshop-backup-${s.dia}.json`, JSON.stringify(s.dados, null, 2), 'application/json'); });
@@ -3365,6 +3504,7 @@ const Auth = {
     Store.load().then(async () => {
       render();
       await migrarLocal();
+      try { migracaoV19(); } catch (e) { console.error(e); }
       setTimeout(backupAutomatico, 20000);   // depois que tudo carregou, sem disputar com o uso
     });
   },
