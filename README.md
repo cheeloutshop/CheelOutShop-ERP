@@ -82,6 +82,15 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - Contas a pagar lançadas ao salvar o pedido; estoque entra ao marcar como Recebido.
 - **Atualize o script da planilha e rode `setup` de novo** para criar as colunas novas (fantasia, cep, endereco, previsao, recebidoEm).
 
+
+## v14 — frente de caixa, fotos, plataformas e insumos
+
+- **Nova venda** abre o **Frente de caixa**: número fixo, data editável, cliente com busca (3 letras) e cadastro rápido, plataforma de venda, produto com foto e busca (3 letras / código de barras), quantidade, valor unitário, subtotal, desconto e forma de pagamento.
+- **Fotos de produtos**: no cadastro do produto (aba Produtos ou no frente de caixa). Com a planilha conectada, ficam na pasta "Cheel Out Shop — Fotos de produtos" do Google Drive.
+- **Configurações › Plataformas de venda**: WhatsApp, Jamble, Retirada (e outras), cada uma com % de comissão. A comissão de cada venda aparece na lista de vendas e no Painel.
+- **Compra de insumos** (menu Compras): embalagens e materiais de envio; gera contas a pagar, não mexe no estoque de produtos.
+- **Atualize o script da planilha e rode `setup`** (cria as abas `insumos` e `plataformas`, as colunas novas e a pasta de fotos).
+
 ## Como os dados se ligam
 
 ```
