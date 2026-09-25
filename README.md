@@ -71,6 +71,17 @@ A partir daí, todo dia às 3h (e no primeiro login do dia) é salva uma cópia 
 
 As configurações avançadas (conexão, troca de senha, importar/exportar, dados de exemplo) continuam disponíveis no endereço `#/avancado` do site.
 
+
+## v11 — pedido de compra
+
+- Número sequencial automático, sem edição (o número só é usado quando o pedido é salvo).
+- Pedidos de compra não são excluídos: use **Cancelar** (estorna o estoque e remove parcelas não pagas).
+- Fornecedor com busca a partir de 3 letras e cadastro rápido; CPF/CNPJ identificado sozinho, com busca dos dados do CNPJ na Receita.
+- Embalagem (CX, FD, PCT…) com "unidades por embalagem": o estoque recebe em unidades.
+- Pagamento: Pix (à vista), Cartão de crédito, Boleto e Reembolso (parcelados).
+- Contas a pagar lançadas ao salvar o pedido; estoque entra ao marcar como Recebido.
+- **Atualize o script da planilha e rode `setup` de novo** para criar as colunas novas (fantasia, cep, endereco, previsao, recebidoEm).
+
 ## Como os dados se ligam
 
 ```

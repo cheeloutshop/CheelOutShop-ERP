@@ -6,15 +6,15 @@
 
 const COLS = {
   produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm'],
-  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm'],
+  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
-  compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm'],
+  compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
   vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm'],
   pagar:      ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '10';
+const APP_VERSAO = '11';
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -30,6 +30,9 @@ const FORMAS = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 
 const A_VISTA = ['Pix', 'Dinheiro', 'Cartão de débito'];
 const ST_VENDA = ['Orçamento', 'Em aberto', 'Atendido', 'Cancelado'];
 const ST_COMPRA = ['Em aberto', 'Recebido', 'Cancelado'];
+const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];   // Pix = à vista; os demais podem parcelar
+const UN_COMPRA = [['UN', 'Unidade'], ['CX', 'Caixa'], ['FD', 'Fardo'], ['PCT', 'Pacote'], ['DZ', 'Dúzia'], ['KIT', 'Kit'], ['PAR', 'Par'], ['OUTRA', 'Outra']];
+const fatorItem = it => (!it.un || it.un === 'UN') ? 1 : Math.max(1, num(it.fator) || 1);
 const CAT_PAGAR = ['Fornecedores', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
 const CAT_RECEBER = ['Vendas', 'Serviços', 'Outros'];
 
@@ -274,33 +277,42 @@ function efeitosVenda(v) {
 }
 
 /* Efeitos de uma compra: movimentos de entrada + contas a pagar + atualiza custo */
+/* Efeitos de um pedido de compra:
+   - contas a pagar: lançadas já na criação do pedido (pré-venda: boleto vence antes da mercadoria chegar)
+   - estoque: entra só quando o pedido é RECEBIDO, sempre em unidades (qtd × unidades por embalagem)
+   - cancelado: estorna o estoque e apaga as parcelas ainda não pagas */
 function efeitosCompra(c) {
   const ops = [];
   Store.data.movimentos.filter(m => m.origem === 'compra' && m.origemId === c.id).forEach(m => ops.push(del('movimentos', m.id)));
-  const pags = Store.data.pagar.filter(r => r.origem === 'compra' && r.origemId === c.id);
-  const temPago = pags.some(r => r.status === 'Pago');
   if (c.status === 'Recebido') {
     for (const it of c.itens) {
+      const f = fatorItem(it), qtdUn = num(it.qtd) * f, custoUn = f ? num(it.valor) / f : num(it.valor);
       ops.push(up('movimentos', {
-        id: uid(), data: c.data, produtoId: it.produtoId, tipo: 'entrada', quantidade: num(it.qtd),
-        custoUnit: num(it.valor), origem: 'compra', origemId: c.id, obs: 'Pedido de compra nº ' + c.numero, criadoEm: agora(),
+        id: uid(), data: c.recebidoEm || hoje(), produtoId: it.produtoId, tipo: 'entrada', quantidade: qtdUn,
+        custoUnit: Math.round(custoUn * 1e4) / 1e4, origem: 'compra', origemId: c.id,
+        obs: 'Pedido de compra nº ' + c.numero + (f > 1 ? ` (${qtdFmt(it.qtd)} ${it.un} × ${f} un)` : ''), criadoEm: agora(),
       }));
       const p = produto(it.produtoId);
-      if (p && num(it.valor) > 0 && num(p.custo) !== num(it.valor)) ops.push(up('produtos', { ...p, custo: num(it.valor) }));
+      const c4 = Math.round(custoUn * 1e4) / 1e4;
+      if (p && c4 > 0 && num(p.custo) !== c4) ops.push(up('produtos', { ...p, custo: c4 }));
     }
-    if (!temPago) {
-      pags.forEach(r => ops.push(del('pagar', r.id)));
-      const parc = gerarParcelas(num(c.total), c.parcelas, c.vencimento || c.data);
-      for (const p of parc) {
-        ops.push(up('pagar', {
-          id: uid(), descricao: `Pedido de compra nº ${c.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : ''),
-          contatoId: c.fornecedorId, categoria: 'Fornecedores', vencimento: p.vencimento, valor: p.valor,
-          status: 'Aberto', pagoEm: '', valorPago: '', origem: 'compra', origemId: c.id, obs: c.formaPgto || '', criadoEm: agora(),
-        }));
-      }
-    }
-  } else {
+  }
+  const pags = Store.data.pagar.filter(r => r.origem === 'compra' && r.origemId === c.id);
+  const temPago = pags.some(r => r.status === 'Pago');
+  if (c.status === 'Cancelado') {
     pags.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id)));
+  } else if (!temPago) {
+    pags.forEach(r => ops.push(del('pagar', r.id)));
+    const nParc = c.formaPgto === 'Pix' ? 1 : c.parcelas;
+    const parc = gerarParcelas(num(c.total), nParc, c.vencimento || c.data);
+    const forn = nomeContato(c.fornecedorId);
+    for (const p of parc) {
+      ops.push(up('pagar', {
+        id: uid(), descricao: `Pedido de compra nº ${c.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (forn ? ` · ${forn}` : ''),
+        contatoId: c.fornecedorId, categoria: 'Fornecedores', vencimento: p.vencimento, valor: p.valor,
+        status: 'Aberto', pagoEm: '', valorPago: '', origem: 'compra', origemId: c.id, obs: c.formaPgto || '', criadoEm: agora(),
+      }));
+    }
   }
   return ops;
 }
@@ -710,22 +722,22 @@ function viewPedidos(el, tipo) {
       <div class="chips"><button class="chip ${!st ? 'on' : ''}" data-st="">Todos</button>${(V ? ST_VENDA : ST_COMPRA).map(s => `<button class="chip ${st === s ? 'on' : ''}" data-st="${s}">${s}</button>`).join('')}</div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Nº</th><th>Data</th><th>${V ? 'Cliente' : 'Fornecedor'}</th>${V ? '<th>Canal</th>' : ''}<th class="r">Itens</th><th>Pagamento</th><th class="r">Total</th><th>Situação</th><th></th></tr></thead>
+      <thead><tr><th>Nº</th><th>Data</th><th>${V ? 'Cliente' : 'Fornecedor'}</th>${V ? '<th>Canal</th>' : '<th>Chegada prev.</th>'}<th class="r">Itens</th><th>Pagamento</th><th class="r">Total</th><th>Situação</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(p => `<tr>
         <td class="strong">${esc(p.numero)}</td><td>${dataBR(p.data)}</td>
         <td class="wrap">${esc(nomeContato(V ? p.clienteId : p.fornecedorId) || (V ? 'Consumidor final' : '—'))}</td>
-        ${V ? `<td>${esc(p.canal)}</td>` : ''}
+        ${V ? `<td>${esc(p.canal)}</td>` : `<td class="${p.status === 'Em aberto' && p.previsao && p.previsao < hoje() ? 'neg strong' : 'muted'}">${dataBR(p.previsao) || '—'}</td>`}
         <td class="r">${qtdFmt(p.itens.reduce((s, i) => s + num(i.qtd), 0))}</td>
         <td class="muted">${esc(p.formaPgto)}${num(p.parcelas) > 1 ? ` · ${p.parcelas}x` : ''}</td>
         <td class="r strong">${brl(p.total)}</td><td>${badgeVenda(p.status)}</td>
         <td class="act"><span class="inner">
           ${V && p.status !== 'Atendido' && p.status !== 'Cancelado' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Baixa no estoque e gera contas a receber">${ICON.check}Faturar</button>` : ''}
-          ${!V && p.status === 'Em aberto' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Entrada no estoque e gera contas a pagar">${ICON.check}Receber</button>` : ''}
+          ${!V && p.status === 'Em aberto' ? `<button class="btn ghost sm" data-fat="${p.id}" title="Dar entrada da mercadoria no estoque">${ICON.check}Receber</button>` : ''}
           <button class="icon-btn" data-print="${p.id}" title="Imprimir">${ICON.print}</button>
           <button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button>
-          <button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button></span></td>
+          ${V ? `<button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button>` : (p.status !== 'Cancelado' ? `<button class="icon-btn del" data-cancel="${p.id}" title="Cancelar pedido">${ICON.undo}</button>` : '')}</span></td>
       </tr>`).join('') : emptyRow(V ? 9 : 8, Store.data[tipo].length ? 'Nada encontrado com esses filtros' : (V ? 'Nenhuma venda ainda. Clique em “Nova venda”.' : 'Nenhum pedido de compra ainda.'), V ? '🛒' : '🚚')}</tbody>
-      ${lista.length ? `<tfoot><tr><td colspan="${V ? 6 : 5}">${lista.length} pedido(s) · total sem cancelados</td><td class="r">${brl(tot)}</td><td colspan="2"></td></tr></tfoot>` : ''}
+      ${lista.length ? `<tfoot><tr><td colspan="6">${lista.length} pedido(s) · total sem cancelados</td><td class="r">${brl(tot)}</td><td colspan="2"></td></tr></tfoot>` : ''}
     </table></div>`;
   bindSearch('q' + key, 'q' + key);
   $('#m' + key).onchange = e => { UI['m' + key] = e.target.value; render(); };
@@ -741,8 +753,19 @@ function viewPedidos(el, tipo) {
       const falta = faltaEstoque(novo);
       confirmar(`${V ? 'Faturar a venda' : 'Receber o pedido'} nº ${p.numero}? ${V ? 'Será dada baixa no estoque e geradas as contas a receber.' : ''}${falta}`, () => Store.commit([up(tipo, novo), ...efeitosVenda(novo)]).then(() => toast('Venda faturada', 'ok')), 'Faturar');
     } else {
-      confirmar(`Confirmar recebimento do pedido de compra nº ${p.numero}? Os produtos entram no estoque e as contas a pagar serão geradas.`, () => Store.commit([up(tipo, novo), ...efeitosCompra(novo)]).then(() => toast('Mercadoria recebida', 'ok')), 'Receber');
+      novo.recebidoEm = hoje();
+      const unid = p.itens.reduce((s, i) => s + num(i.qtd) * fatorItem(i), 0);
+      confirmar(`Confirmar o recebimento do pedido de compra nº ${p.numero}? Entram <b>${qtdFmt(unid)} unidade(s)</b> no estoque, com data de hoje.`, () => Store.commit([up(tipo, novo), ...efeitosCompra(novo)]).then(() => toast('Mercadoria recebida', 'ok')), 'Receber');
     }
+  });
+  $$('[data-cancel]', el).forEach(b => b.onclick = () => {
+    const p = find(b.dataset.cancel);
+    const pagas = Store.data.pagar.filter(r => r.origemId === p.id && r.status === 'Pago');
+    const novo = { ...p, status: 'Cancelado' };
+    confirmar(`Cancelar o pedido de compra nº ${p.numero}? Ele continua na lista como <b>Cancelado</b> (pedidos de compra não são excluídos).`
+      + (p.status === 'Recebido' ? '<div class="note warn">A entrada no estoque deste pedido será estornada.</div>' : '')
+      + (pagas.length ? `<div class="note warn">${pagas.length} parcela(s) já paga(s) continuam no financeiro. As demais serão removidas.</div>` : '<div class="note">As contas a pagar deste pedido serão removidas.</div>'),
+      () => Store.commit([up(tipo, novo), ...efeitosCompra(novo)]).then(() => toast('Pedido cancelado', 'ok')), 'Cancelar pedido');
   });
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const p = find(b.dataset.del);
@@ -962,7 +985,370 @@ function formPedido(tipo, p) {
   });
 }
 function formVenda(p) { formPedido('vendas', p); }
-function formCompra(p) { formPedido('compras', p); }
+/* =========================================================
+   CPF / CNPJ — identificação automática e busca na Receita
+   ========================================================= */
+const soDig = s => String(s || '').replace(/\D/g, '');
+function cpfValido(v) {
+  const c = soDig(v);
+  if (c.length !== 11 || /^(\d)\1+$/.test(c)) return false;
+  for (let t = 9; t < 11; t++) {
+    let s = 0;
+    for (let i = 0; i < t; i++) s += +c[i] * (t + 1 - i);
+    if (((s * 10) % 11) % 10 !== +c[t]) return false;
+  }
+  return true;
+}
+function cnpjValido(v) {
+  const c = soDig(v);
+  if (c.length !== 14 || /^(\d)\1+$/.test(c)) return false;
+  const dv = n => { let s = 0, p = n - 7; for (let i = 0; i < n; i++) { s += +c[i] * p--; if (p < 2) p = 9; } const r = s % 11; return r < 2 ? 0 : 11 - r; };
+  return dv(12) === +c[12] && dv(13) === +c[13];
+}
+function fmtDoc(v) {
+  const d = soDig(v).slice(0, 14);
+  if (d.length <= 11) return d.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+  return d.replace(/^(\d{2})(\d)/, '$1.$2').replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3').replace(/\.(\d{3})(\d)/, '.$1/$2').replace(/(\d{4})(\d)/, '$1-$2');
+}
+function tipoDoc(v) {
+  const d = soDig(v);
+  if (d.length === 11) return cpfValido(d) ? 'cpf' : 'cpf-invalido';
+  if (d.length === 14) return cnpjValido(d) ? 'cnpj' : 'cnpj-invalido';
+  return d.length ? 'incompleto' : '';
+}
+const fmtTel = v => { const d = soDig(v); if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`; if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`; return v || ''; };
+const fmtCep = v => { const d = soDig(v); return d.length === 8 ? d.slice(0, 5) + '-' + d.slice(5) : (v || ''); };
+const titulo = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase());
+
+/* Consulta dados públicos do CNPJ (Receita Federal) — BrasilAPI e, se falhar, CNPJ.ws */
+async function buscarCNPJ(cnpj) {
+  const c = soDig(cnpj);
+  try {
+    const r = await fetch('https://brasilapi.com.br/api/cnpj/v1/' + c);
+    if (r.status === 404) throw new Error('CNPJ não encontrado na Receita');
+    if (r.ok) {
+      const d = await r.json();
+      return {
+        nome: d.razao_social || '', fantasia: d.nome_fantasia || '', telefone: fmtTel(d.ddd_telefone_1 || d.ddd_telefone_2), email: String(d.email || '').toLowerCase(),
+        cep: fmtCep(d.cep), cidade: titulo(d.municipio), uf: d.uf || '', situacao: d.descricao_situacao_cadastral || '',
+        endereco: [titulo([d.descricao_tipo_de_logradouro, d.logradouro].filter(Boolean).join(' ')), d.numero, titulo(d.complemento), titulo(d.bairro)].filter(Boolean).join(', '),
+      };
+    }
+  } catch (e) { if (/não encontrado/.test(e.message)) throw e; }
+  const r2 = await fetch('https://publica.cnpj.ws/cnpj/' + c);
+  if (!r2.ok) throw new Error(r2.status === 404 ? 'CNPJ não encontrado na Receita' : 'Consulta indisponível agora (tente em 1 minuto)');
+  const d = await r2.json(), e = d.estabelecimento || {};
+  return {
+    nome: d.razao_social || '', fantasia: e.nome_fantasia || '', telefone: fmtTel((e.ddd1 || '') + (e.telefone1 || '')), email: String(e.email || '').toLowerCase(),
+    cep: fmtCep(e.cep), cidade: titulo(e.cidade?.nome), uf: e.estado?.sigla || '', situacao: e.situacao_cadastral || '',
+    endereco: [titulo([e.tipo_logradouro, e.logradouro].filter(Boolean).join(' ')), e.numero, titulo(e.complemento), titulo(e.bairro)].filter(Boolean).join(', '),
+  };
+}
+
+/* Liga um campo de CPF/CNPJ: máscara, identificação automática, validação e busca na Receita.
+   get(k) devolve o input do campo k (nome, fantasia, telefone, email, cep, endereco, cidade, uf). */
+function ligarDocumento(docInput, statusEl, get, ignorarId) {
+  let ultimo = '';
+  const status = (html, cls = '') => { statusEl.className = 'doc-status ' + cls; statusEl.innerHTML = html; };
+  const atualizar = async () => {
+    const d = soDig(docInput.value);
+    const pos = docInput.selectionStart, antes = docInput.value.length;
+    docInput.value = fmtDoc(d);
+    if (document.activeElement === docInput && pos === antes) docInput.setSelectionRange(docInput.value.length, docInput.value.length);
+    const t = tipoDoc(d);
+    const dup = d.length >= 11 && Store.data.contatos.find(c => soDig(c.documento) === d && c.id !== ignorarId);
+    if (!t) return status('Digite o CPF (11 dígitos) ou o CNPJ (14 dígitos). O tipo é identificado sozinho.');
+    if (t === 'incompleto') return status(d.length < 11 ? `${d.length} dígito(s)…` : `Parece um CNPJ: ${d.length}/14 dígitos…`);
+    if (t === 'cpf-invalido') return status('CPF inválido — confira os números.', 'bad');
+    if (t === 'cnpj-invalido') return status('CNPJ inválido — confira os números.', 'bad');
+    if (dup) return status(`Já existe um cadastro com este documento: <b>${esc(dup.nome)}</b>.`, 'warn');
+    if (t === 'cpf') return status('<b>Pessoa física</b> · CPF válido ✓', 'ok');
+    if (d === ultimo) return;
+    ultimo = d;
+    status('<b>Pessoa jurídica</b> · CNPJ válido · buscando dados na Receita…', 'load');
+    try {
+      const r = await buscarCNPJ(d);
+      if (soDig(docInput.value) !== d) return;
+      for (const k of ['nome', 'fantasia', 'telefone', 'email', 'cep', 'endereco', 'cidade', 'uf']) { const i = get(k); if (i && r[k]) i.value = r[k]; }
+      const sit = String(r.situacao || '').toUpperCase();
+      status(`<b>Pessoa jurídica</b> · dados preenchidos pela Receita ✓${sit ? ` · situação: <b>${esc(sit)}</b>` : ''}`, sit && sit !== 'ATIVA' ? 'warn' : 'ok');
+    } catch (e) {
+      ultimo = '';
+      status(`<b>Pessoa jurídica</b> · CNPJ válido. ${esc(e.message || 'Não foi possível consultar a Receita')} — preencha os dados manualmente.`, 'warn');
+    }
+  };
+  if (docInput._atualizarDoc) { docInput._atualizarDoc(); return; }   // já ligado: só reavalia
+  docInput._atualizarDoc = atualizar;
+  docInput.addEventListener('input', atualizar);
+  atualizar();
+}
+
+/* Campos de cadastro de pessoa (usados no cadastro rápido e no cadastro completo) */
+function camposPessoa(pref, c = {}) {
+  const a = k => `data-${pref}="${k}"`;
+  return `
+    <div class="grid g4">
+      <label class="f span2">CPF ou CNPJ<input ${a('documento')} inputmode="numeric" autocomplete="off" value="${esc(c.documento || '')}" placeholder="Só números — o tipo é identificado sozinho"><span class="doc-status" ${a('docStatus')}></span></label>
+      ${field('Nome / razão social *', `<input ${a('nome')} autocomplete="off" value="${esc(c.nome || '')}">`, 'span2')}
+      ${field('Nome fantasia', `<input ${a('fantasia')} autocomplete="off" value="${esc(c.fantasia || '')}">`, 'span2')}
+      ${field('Telefone / WhatsApp', `<input ${a('telefone')} inputmode="tel" autocomplete="off" value="${esc(c.telefone || '')}">`)}
+      ${field('E-mail', `<input ${a('email')} type="email" autocomplete="off" value="${esc(c.email || '')}">`)}
+      ${field('CEP', `<input ${a('cep')} inputmode="numeric" autocomplete="off" value="${esc(c.cep || '')}">`)}
+      ${field('Endereço', `<input ${a('endereco')} autocomplete="off" value="${esc(c.endereco || '')}">`, 'span3')}
+      ${field('Cidade', `<input ${a('cidade')} autocomplete="off" value="${esc(c.cidade || '')}">`, 'span3')}
+      ${field('UF', `<input ${a('uf')} maxlength="2" autocomplete="off" value="${esc(c.uf || '')}">`)}
+    </div>`;
+}
+function lerPessoa(root, pref) {
+  const g = k => ($(`[data-${pref}="${k}"]`, root)?.value || '').trim();
+  return { documento: fmtDoc(g('documento')), nome: g('nome'), fantasia: g('fantasia'), telefone: g('telefone'), email: g('email'), cep: g('cep'), endereco: g('endereco'), cidade: g('cidade'), uf: g('uf').toUpperCase() };
+}
+
+/* Campo de busca de fornecedor: sugestões a partir de 3 letras + opção de cadastrar */
+function fornecedorPicker(wrap, onNovo) {
+  const txt = $('.ac-txt', wrap), hid = $('input[type=hidden]', wrap), list = $('.ac-list', wrap);
+  let itens = [], ativo = -1;
+  const lista = () => Store.data.contatos.filter(c => c.tipo === 'Fornecedor' || c.tipo === 'Ambos');
+  const fechar = () => { list.hidden = true; ativo = -1; };
+  const marcar = () => $$('.ac-item', list).forEach((el, i) => el.classList.toggle('on', i === ativo));
+  const escolher = c => { hid.value = c.id; txt.value = c.nome; wrap.classList.add('ok'); fechar(); };
+  const abrir = () => {
+    const q = txt.value.trim(), d = soDig(q);
+    if (q.length < 3) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 3 letras do nome (ou números do CNPJ/CPF)…</div>'; list.hidden = false; return; }
+    const r = lista().filter(c => match(q, c.nome, c.fantasia) || (d.length >= 3 && soDig(c.documento).includes(d)))
+      .sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 8);
+    itens = [...r.map(c => ({ c })), { novo: true }];
+    list.innerHTML = (r.length ? '' : '<div class="ac-hint">Nenhum fornecedor encontrado.</div>')
+      + r.map((c, i) => `<div class="ac-item" data-k="${i}"><b>${esc(c.nome)}</b><small>${esc([c.fantasia, c.documento, c.cidade && c.cidade + (c.uf ? '/' + c.uf : '')].filter(Boolean).join(' · '))}</small></div>`).join('')
+      + `<div class="ac-item ac-novo" data-k="${r.length}">➕ Cadastrar novo fornecedor${q ? ` “${esc(q)}”` : ''}</div>`;
+    ativo = 0; marcar(); list.hidden = false;
+  };
+  const pick = k => { const it = itens[k]; if (!it) return; if (it.novo) { fechar(); onNovo(txt.value.trim()); } else escolher(it.c); };
+  txt.addEventListener('input', () => { hid.value = ''; wrap.classList.remove('ok'); abrir(); });
+  txt.addEventListener('focus', () => { if (!hid.value) abrir(); });
+  txt.addEventListener('blur', () => setTimeout(fechar, 150));
+  txt.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); if (!list.hidden) pick(ativo); return; }
+    if (list.hidden || !itens.length) return;
+    if (e.key === 'ArrowDown') { ativo = Math.min(itens.length - 1, ativo + 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { ativo = Math.max(0, ativo - 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'Escape') { fechar(); e.preventDefault(); e.stopPropagation(); }
+  });
+  list.addEventListener('mousedown', e => { const it = e.target.closest('.ac-item'); if (!it) return; e.preventDefault(); pick(+it.dataset.k); });
+  if (hid.value) wrap.classList.add('ok');
+  return { escolher };
+}
+
+/* =========================================================
+   PEDIDO DE COMPRA
+   ========================================================= */
+function itemRowCompra(it) {
+  const un = it.un || 'UN', emb = un !== 'UN';
+  return `<tr>
+    <td class="c-prod"><select data-i="prod">${prodOptionsPedido(it.produtoId)}</select></td>
+    <td class="c-un"><select data-i="un" title="Como vem na compra">${opt(UN_COMPRA, un)}</select></td>
+    <td class="c-fat"><input data-i="fator" inputmode="numeric" value="${emb ? esc(it.fator || '') : ''}" placeholder="${emb ? 'ex.: 12' : '—'}" ${emb ? '' : 'disabled'} title="Quantas unidades vêm em cada embalagem"></td>
+    <td class="c-qtd"><input data-i="qtd" inputmode="decimal" value="${esc(it.qtd ?? 1)}"></td>
+    <td class="c-val"><input data-i="valor" inputmode="decimal" value="${dec(it.valor)}" placeholder="custo"></td>
+    <td class="c-sub"><span data-i="sub"></span><small data-i="eq"></small></td>
+    <td class="act"><button type="button" class="icon-btn del" data-i="rm" title="Remover">${ICON.del}</button></td>
+  </tr>`;
+}
+
+function formCompra(p) {
+  const novo = !p;
+  p = p ? { ...p, itens: p.itens.map(i => ({ ...i })) } : {
+    data: hoje(), status: 'Em aberto', formaPgto: 'Boleto', parcelas: 1, vencimento: addDias(hoje(), 30), previsao: '', frete: '', desconto: '', itens: [{ qtd: 1, un: 'UN' }],
+  };
+  const numeroPrevisto = novo ? proxNumero(Store.data.compras) : p.numero;
+  const forn = contato(p.fornecedorId);
+  const formas = FORMAS_COMPRA.includes(p.formaPgto) || !p.formaPgto ? FORMAS_COMPRA : [...FORMAS_COMPRA, p.formaPgto];
+  const statusAnterior = p.status;
+  Modal.open({
+    title: novo ? 'Novo pedido de compra' : `Pedido de compra nº ${p.numero}`,
+    submit: 'Salvar pedido',
+    body: `
+      <div class="grid g4">
+        <label class="f">Nº do pedido<div class="num-fixo" title="Número sequencial automático">${esc(numeroPrevisto)}${novo ? '<small>confirmado ao salvar</small>' : ''}</div></label>
+        ${field('Data do pedido *', inp('data', p.data, 'type="date" required'))}
+        ${field('Previsão de chegada', inp('previsao', p.previsao, 'type="date"'))}
+        ${field('Situação', `<select name="status" id="pedStatus">${opt(ST_COMPRA, p.status)}</select>`)}
+        <label class="f span4">Fornecedor *
+          <div class="ac" id="acForn">
+            <input class="ac-txt" autocomplete="off" placeholder="Digite 3 letras do nome ou o CNPJ/CPF…" value="${esc(forn?.nome || '')}">
+            <input type="hidden" name="contatoId" value="${esc(p.fornecedorId || '')}">
+            <div class="ac-list" hidden></div>
+          </div>
+        </label>
+      </div>
+      <div class="inline-new" id="pnlContato" hidden>
+        <div class="inline-head"><b>Novo fornecedor</b><span class="muted">digite o CNPJ para preencher tudo automaticamente pela Receita</span></div>
+        ${camposPessoa('nc')}
+        <div class="inline-actions"><button type="button" class="btn ghost sm" data-nc-cancel>Cancelar</button><button type="button" class="btn primary sm" data-nc-save>Salvar fornecedor</button></div>
+      </div>
+      <div class="section-t">Itens</div>
+      <div class="items"><table>
+        <thead><tr><th>Produto</th><th>Embalagem</th><th>Unid. por emb.</th><th>Qtd</th><th>Custo por emb.</th><th class="r">Subtotal</th><th></th></tr></thead>
+        <tbody id="itensBody">${p.itens.map(itemRowCompra).join('')}</tbody>
+      </table><div class="items-add"><button type="button" class="btn ghost sm" id="addItem">${ICON.plus}Adicionar item</button><button type="button" class="btn ghost sm" id="addProdNovo">${ICON.plus}Cadastrar novo produto</button><span class="muted" id="eqTotal" style="font-size:13px;font-weight:800;margin-left:auto"></span></div></div>
+      <div class="inline-new" id="pnlProduto" hidden>
+        <div class="inline-head"><b>Novo produto</b><span class="muted">cadastro rápido — entra direto no item do pedido</span></div>
+        <div class="grid g4">
+          ${field('Nome do produto *', '<input data-np="nome" autocomplete="off">', 'span2')}
+          ${field('SKU / código', '<input data-np="sku" autocomplete="off">')}
+          ${field('Categoria', '<input data-np="categoria" list="dlCatsPed" autocomplete="off">' + `<datalist id="dlCatsPed">${[...new Set(Store.data.produtos.map(x => x.categoria).filter(Boolean))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>`)}
+          ${field('Custo por unidade (R$)', '<input data-np="custo" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
+          ${field('Preço de venda (R$)', '<input data-np="preco" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
+          ${field('Estoque mínimo (un)', '<input data-np="estoqueMin" inputmode="decimal" placeholder="0" autocomplete="off">')}
+        </div>
+        <div class="inline-actions"><button type="button" class="btn ghost sm" data-np-cancel>Cancelar</button><button type="button" class="btn primary sm" data-np-save>Salvar produto e usar no item</button></div>
+      </div>
+      <div class="grid g4" style="margin-top:14px">
+        ${field('Frete (R$)', inp('frete', dec(p.frete), 'inputmode="decimal" placeholder="0,00" id="pedFrete"'))}
+        ${field('Desconto (R$)', inp('desconto', dec(p.desconto), 'inputmode="decimal" placeholder="0,00" id="pedDesc"'))}
+        <div class="span2 totals" style="align-items:end;margin:0"><span>Produtos: <span id="tProd">R$ 0,00</span></span><span>Total: <b id="tTotal">R$ 0,00</b></span></div>
+      </div>
+      <div class="section-t">Pagamento</div>
+      <div class="grid g4">
+        ${field('Forma de pagamento', `<select name="formaPgto" id="pgForma">${opt(formas, p.formaPgto)}</select>`)}
+        ${field('Parcelas', inp('parcelas', p.parcelas || 1, 'type="number" min="1" max="48" id="pgParc"'))}
+        ${field('1º vencimento', inp('vencimento', p.vencimento || p.data, 'type="date" id="pgVenc"'))}
+        <div class="f" style="justify-content:end"><span class="muted" id="pgResumo" style="font-size:13px;font-weight:800"></span></div>
+      </div>
+      ${field('Observações', `<textarea name="obs">${esc(p.obs)}</textarea>`, '')}
+      <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado.</div>`,
+    onOpen: body => {
+      const tb = $('#itensBody', body);
+      const recalc = () => {
+        let s = 0, un = 0;
+        $$('tr', tb).forEach(tr => {
+          const q = num($('[data-i=qtd]', tr).value), v = num($('[data-i=valor]', tr).value);
+          const u = $('[data-i=un]', tr).value, f = u === 'UN' ? 1 : Math.max(0, num($('[data-i=fator]', tr).value));
+          s += q * v; un += q * (f || 0);
+          $('[data-i=sub]', tr).textContent = brl(q * v);
+          $('[data-i=eq]', tr).textContent = u === 'UN' ? '' : (f ? `= ${qtdFmt(q * f)} un · ${brl(f ? v / f : 0)}/un` : 'informe unid. por emb.');
+          $('[data-i=eq]', tr).classList.toggle('neg', u !== 'UN' && !f);
+        });
+        $('#tProd').textContent = brl(s);
+        const total = s + num($('#pedFrete').value) - num($('#pedDesc').value);
+        $('#tTotal').textContent = brl(total);
+        $('#eqTotal').textContent = un ? `Entrada no estoque: ${qtdFmt(un)} unidade(s)` : '';
+        const pix = $('#pgForma').value === 'Pix';
+        $('#pgParc').disabled = pix; if (pix) $('#pgParc').value = 1;
+        const n = Math.max(1, Math.floor(num($('#pgParc').value)) || 1);
+        $('#pgResumo').textContent = total > 0 ? (n > 1 ? `${n}x de ${brl(total / n)}` : `1x de ${brl(total)}`) + ' em contas a pagar' : '';
+      };
+      tb.addEventListener('input', recalc);
+      tb.addEventListener('change', e => {
+        const tr = e.target.closest('tr');
+        if (e.target.dataset.i === 'prod' && e.target.value === NOVO_PROD) { e.target.value = ''; abrirProduto(tr); return; }
+        if (e.target.dataset.i === 'un') {
+          const f = $('[data-i=fator]', tr), emb = e.target.value !== 'UN';
+          f.disabled = !emb; f.placeholder = emb ? 'ex.: 12' : '—'; if (!emb) f.value = ''; else setTimeout(() => f.focus(), 30);
+        }
+        if (e.target.dataset.i === 'prod' || e.target.dataset.i === 'un' || e.target.dataset.i === 'fator') {
+          const pr = produto($('[data-i=prod]', tr).value);
+          const u = $('[data-i=un]', tr).value, f = u === 'UN' ? 1 : num($('[data-i=fator]', tr).value);
+          if (pr && num(pr.custo) && f && (e.target.dataset.i === 'prod' || !num($('[data-i=valor]', tr).value))) $('[data-i=valor]', tr).value = dec(num(pr.custo) * f);
+        }
+        recalc();
+      });
+      tb.addEventListener('click', e => {
+        const b = e.target.closest('[data-i=rm]');
+        if (b) { if ($$('tr', tb).length > 1) b.closest('tr').remove(); else { $('select', b.closest('tr')).value = ''; } recalc(); }
+      });
+      $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); recalc(); $('tr:last-child select', tb).focus(); };
+      ['#pedFrete', '#pedDesc', '#pgParc'].forEach(s => $(s, body).oninput = recalc);
+      $('#pgForma', body).onchange = recalc;
+
+      // ---- fornecedor: busca + cadastro rápido
+      const pnlC = $('#pnlContato', body);
+      const picker = fornecedorPicker($('#acForn', body), texto => {
+        $$('[data-nc]', pnlC).forEach(i => { if (i.tagName === 'INPUT') i.value = ''; });
+        if (/\d{3,}/.test(texto) && soDig(texto).length >= 3) $('[data-nc=documento]', pnlC).value = texto; else $('[data-nc=nome]', pnlC).value = texto;
+        pnlC.hidden = false;
+        ligarDocumento($('[data-nc=documento]', pnlC), $('[data-nc=docStatus]', pnlC), k => $(`[data-nc=${k}]`, pnlC));
+        setTimeout(() => $('[data-nc=documento]', pnlC).focus(), 50);
+      });
+      const salvarContato = () => {
+        const d = lerPessoa(pnlC, 'nc');
+        if (!d.nome) { toast('Informe o nome ou a razão social', 'err'); $('[data-nc=nome]', pnlC).focus(); return; }
+        const t = tipoDoc(d.documento);
+        if (t === 'cpf-invalido' || t === 'cnpj-invalido') { toast('CPF/CNPJ inválido', 'err'); return; }
+        const c = { id: uid(), tipo: 'Fornecedor', ...d, obs: '', criadoEm: agora() };
+        Store.commit([up('contatos', c)]);
+        picker.escolher(c);
+        pnlC.hidden = true;
+        toast('Fornecedor cadastrado e selecionado', 'ok');
+      };
+      $('[data-nc-save]', pnlC).onclick = salvarContato;
+      $('[data-nc-cancel]', pnlC).onclick = () => { pnlC.hidden = true; };
+      pnlC.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); salvarContato(); } });
+
+      // ---- produto: cadastro rápido
+      const pnlP = $('#pnlProduto', body);
+      let linhaAlvo = null;
+      const abrirProduto = tr => {
+        linhaAlvo = tr;
+        $$('[data-np]', pnlP).forEach(i => { i.value = ''; });
+        let n = Store.data.produtos.length + 1, sku;
+        do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
+        $('[data-np=sku]', pnlP).value = sku;
+        pnlP.hidden = false; pnlP.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        setTimeout(() => $('[data-np=nome]', pnlP).focus(), 50);
+      };
+      const salvarProduto = () => {
+        const g = k => $(`[data-np=${k}]`, pnlP).value.trim();
+        if (!g('nome')) { toast('Informe o nome do produto', 'err'); $('[data-np=nome]', pnlP).focus(); return; }
+        if (g('sku') && Store.data.produtos.some(x => x.sku === g('sku'))) { toast('Já existe um produto com esse SKU', 'err'); return; }
+        const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora() };
+        Store.commit([up('produtos', pr)]);
+        $$('[data-i=prod]', tb).forEach(s => { const v = s.value; s.innerHTML = prodOptionsPedido(v === NOVO_PROD ? '' : v); });
+        let tr = linhaAlvo && tb.contains(linhaAlvo) ? linhaAlvo : $$('tr', tb).find(r => !$('[data-i=prod]', r).value);
+        if (!tr) { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); tr = $('tr:last-child', tb); }
+        $('[data-i=prod]', tr).value = pr.id;
+        const u = $('[data-i=un]', tr).value, f = u === 'UN' ? 1 : num($('[data-i=fator]', tr).value);
+        if (pr.custo && f) $('[data-i=valor]', tr).value = dec(pr.custo * f);
+        pnlP.hidden = true; linhaAlvo = null; recalc();
+        toast('Produto cadastrado e adicionado ao pedido', 'ok');
+        setTimeout(() => $('[data-i=un]', tr).focus(), 50);
+      };
+      $('[data-np-save]', pnlP).onclick = salvarProduto;
+      $('[data-np-cancel]', pnlP).onclick = () => { pnlP.hidden = true; linhaAlvo = null; };
+      pnlP.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); salvarProduto(); } });
+      $('#addProdNovo', body).onclick = () => abrirProduto(null);
+      recalc();
+    },
+    onSubmit: (fd, body) => {
+      if (!$('#pnlProduto', body).hidden && $('[data-np=nome]', body).value.trim()) { toast('Termine o cadastro do produto (Salvar produto) ou clique em Cancelar', 'err'); return false; }
+      if (!$('#pnlContato', body).hidden && $('[data-nc=nome]', body).value.trim()) { toast('Termine o cadastro do fornecedor (Salvar fornecedor) ou clique em Cancelar', 'err'); return false; }
+      if (!fd.contatoId) { toast('Escolha um fornecedor na lista (digite 3 letras) ou cadastre um novo', 'err'); $('#acForn .ac-txt', body).focus(); return false; }
+      const linhas = $$('#itensBody tr', body).map(tr => {
+        const un = $('[data-i=un]', tr).value;
+        return { produtoId: $('[data-i=prod]', tr).value, un, fator: un === 'UN' ? 1 : Math.floor(num($('[data-i=fator]', tr).value)), qtd: num($('[data-i=qtd]', tr).value), valor: r2($('[data-i=valor]', tr).value) };
+      }).filter(i => i.produtoId && i.qtd > 0);
+      if (!linhas.length) { toast('Adicione pelo menos um item com produto e quantidade', 'err'); return false; }
+      const semFator = linhas.find(i => i.un !== 'UN' && !(i.fator > 0));
+      if (semFator) { toast(`Informe quantas unidades vêm em cada ${UN_COMPRA.find(u => u[0] === semFator.un)[1].toLowerCase()} de “${nomeProduto(semFator.produtoId)}”`, 'err'); return false; }
+      const total = r2(totalItens(linhas) + num(fd.frete) - num(fd.desconto));
+      const formaPgto = fd.formaPgto || 'Boleto';
+      const rec = {
+        id: p.id || uid(),
+        numero: novo ? String(proxNumero(Store.data.compras)) : p.numero,   // número definido só agora, ao salvar
+        data: fd.data, previsao: fd.previsao || '', status: fd.status, fornecedorId: fd.contatoId, itens: linhas,
+        frete: r2(fd.frete), desconto: r2(fd.desconto), total, formaPgto,
+        parcelas: formaPgto === 'Pix' ? 1 : Math.max(1, Math.floor(num(fd.parcelas)) || 1),
+        vencimento: fd.vencimento || fd.data, obs: fd.obs, criadoEm: p.criadoEm || agora(),
+        recebidoEm: fd.status === 'Recebido' ? (p.recebidoEm || hoje()) : '',
+      };
+      const fin = Store.data.pagar.filter(r => r.origemId === rec.id);
+      if (fin.some(r => r.status === 'Pago') && (num(p.total) !== total || statusAnterior !== rec.status)) toast('Este pedido tem parcelas já pagas: as contas não foram refeitas. Ajuste no financeiro se necessário.');
+      Store.commit([up('compras', rec), ...efeitosCompra(rec)]);
+      toast(novo ? `Pedido de compra nº ${rec.numero} criado` : 'Pedido atualizado', 'ok');
+    },
+  });
+}
+
 
 function imprimirPedido(tipo, p) {
   const V = tipo === 'vendas';
@@ -974,7 +1360,7 @@ function imprimirPedido(tipo, p) {
   <div class="head"><img src="${new URL('logo.png', location.href)}"><div style="text-align:right"><h1>${V ? 'Pedido de venda' : 'Pedido de compra'} nº ${esc(p.numero)}</h1><div>Data: ${dataBR(p.data)} · Situação: ${esc(p.status)}</div></div></div>
   <p><b>${V ? 'Cliente' : 'Fornecedor'}:</b> ${esc(c?.nome || (V ? 'Consumidor final' : ''))}${c?.documento ? ' · ' + esc(c.documento) : ''}${c?.telefone ? ' · ' + esc(c.telefone) : ''}${c?.email ? ' · ' + esc(c.email) : ''}${c?.cidade ? '<br>' + esc(c.cidade) + (c.uf ? '/' + esc(c.uf) : '') : ''}</p>
   <table><thead><tr><th>Produto</th><th class="r">Qtd</th><th class="r">Unitário</th><th class="r">Subtotal</th></tr></thead><tbody>
-  ${p.itens.map(i => `<tr><td>${esc(produto(i.produtoId)?.sku || '')} ${esc(nomeProduto(i.produtoId))}</td><td class="r">${qtdFmt(i.qtd)}</td><td class="r">${brl(i.valor)}</td><td class="r">${brl(num(i.qtd) * num(i.valor))}</td></tr>`).join('')}
+  ${p.itens.map(i => `<tr><td>${esc(produto(i.produtoId)?.sku || '')} ${esc(nomeProduto(i.produtoId))}${!V && i.un && i.un !== 'UN' ? ` <small>(${esc(i.un)} c/ ${esc(i.fator)} un)</small>` : ''}</td><td class="r">${qtdFmt(i.qtd)}${!V && i.un && i.un !== 'UN' ? ' ' + esc(i.un) : ''}</td><td class="r">${brl(i.valor)}</td><td class="r">${brl(num(i.qtd) * num(i.valor))}</td></tr>`).join('')}
   </tbody></table>
   <div class="tot">Produtos: ${brl(totalItens(p.itens))}<br>Frete: ${brl(p.frete)} · Desconto: ${brl(p.desconto)}<br><b>Total: ${brl(p.total)}</b></div>
   <p><b>Pagamento:</b> ${esc(p.formaPgto)} · ${esc(p.parcelas)}x · 1º venc. ${dataBR(p.vencimento)}</p>
@@ -1117,7 +1503,7 @@ function viewContatos(el, tipo) {
     <div class="table-wrap"><table>
       <thead><tr><th>Nome</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th class="r">${F ? 'Compras' : 'Vendas'}</th><th class="r">Total</th><th>Última</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(c => { const m = mov[c.id] || { n: 0, t: 0, ult: '' }; return `<tr>
-        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}</td>
+        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
         <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
@@ -1141,18 +1527,17 @@ function formContato(c, tipo = 'Cliente') {
   const nomeTipo = c.tipo === 'Fornecedor' ? 'fornecedor' : c.tipo === 'Ambos' ? 'cadastro' : 'cliente';
   Modal.open({
     title: novo ? 'Novo ' + nomeTipo : 'Editar ' + nomeTipo,
-    body: `<div class="grid g4">
-      ${field('Nome / razão social *', inp('nome', c.nome, 'required'), 'span3')}
-      ${field('É', `<select name="tipo">${opt([['Cliente', 'Cliente'], ['Fornecedor', 'Fornecedor'], ['Ambos', 'Cliente e fornecedor']], c.tipo)}</select>`)}
-      ${field('CPF / CNPJ', inp('documento', c.documento))}
-      ${field('Telefone / WhatsApp', inp('telefone', c.telefone, 'inputmode="tel"'))}
-      ${field('E-mail', inp('email', c.email, 'type="email"'), 'span2')}
-      ${field('Cidade', inp('cidade', c.cidade), 'span3')}
-      ${field('UF', inp('uf', c.uf, 'maxlength="2"'))}
-      ${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`, 'span4')}
-    </div>`,
-    onSubmit: fd => {
-      Store.commit([up('contatos', { ...c, id: c.id || uid(), nome: fd.nome.trim(), tipo: fd.tipo, documento: fd.documento.trim(), telefone: fd.telefone.trim(), email: fd.email.trim(), cidade: fd.cidade.trim(), uf: fd.uf.trim().toUpperCase(), obs: fd.obs, criadoEm: c.criadoEm || agora() })]);
+    body: `
+      <div class="grid g4" style="margin-bottom:14px">${field('É', `<select name="tipo">${opt([['Cliente', 'Cliente'], ['Fornecedor', 'Fornecedor'], ['Ambos', 'Cliente e fornecedor']], c.tipo)}</select>`)}</div>
+      ${camposPessoa('pc', c)}
+      <div style="margin-top:14px">${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`)}</div>`,
+    onOpen: body => ligarDocumento($('[data-pc=documento]', body), $('[data-pc=docStatus]', body), k => $(`[data-pc=${k}]`, body), c.id),
+    onSubmit: (fd, body) => {
+      const d = lerPessoa(body, 'pc');
+      if (!d.nome) { toast('Informe o nome ou a razão social', 'err'); $('[data-pc=nome]', body).focus(); return false; }
+      const t = tipoDoc(d.documento);
+      if (t === 'cpf-invalido' || t === 'cnpj-invalido') { toast('CPF/CNPJ inválido — confira os números', 'err'); return false; }
+      Store.commit([up('contatos', { ...c, ...d, id: c.id || uid(), tipo: fd.tipo, obs: fd.obs, criadoEm: c.criadoEm || agora() })]);
       toast(novo ? 'Cadastro salvo' : 'Cadastro atualizado', 'ok');
     },
   });

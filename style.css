@@ -392,3 +392,28 @@ img.auth-mobile-brand { display: none; }
 .inline-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .items-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .card h3 svg { width: 18px; height: 18px; }
+
+/* ---------- v11: pedido de compra ---------- */
+.num-fixo { display: flex; align-items: baseline; gap: 8px; border: 1.5px dashed #C9D8F7; background: #F5F8FF; border-radius: 10px; padding: 9px 11px; font-size: 17px; font-weight: 900; color: var(--blue-800); cursor: not-allowed; }
+.num-fixo small { font-size: 11px; font-weight: 800; color: var(--ink-3); }
+.ac { position: relative; }
+.ac.ok .ac-txt { border-color: #9FD9BC; background: #F4FCF8; }
+.ac-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20; background: #fff; border: 1.5px solid var(--line); border-radius: 12px; box-shadow: 0 12px 30px rgba(10,42,107,.16); max-height: 300px; overflow-y: auto; padding: 4px; }
+.ac-item { padding: 9px 11px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; font-weight: 700; color: var(--ink); }
+.ac-item small { font-size: 12px; color: var(--ink-3); font-weight: 700; }
+.ac-item.on, .ac-item:hover { background: var(--blue-50); }
+.ac-novo { color: var(--blue-600); font-weight: 900; border-top: 1px dashed var(--line); margin-top: 2px; }
+.ac-hint { padding: 9px 11px; font-size: 13px; font-weight: 700; color: var(--ink-3); }
+.doc-status { display: block; font-size: 12.5px; font-weight: 700; color: var(--ink-3); min-height: 16px; }
+.doc-status.ok { color: var(--green); } .doc-status.bad { color: var(--red); } .doc-status.warn { color: var(--amber); } .doc-status.load { color: var(--blue-600); }
+.items { overflow-x: auto; }
+.items .c-un { width: 110px; } .items .c-fat { width: 100px; }
+.items .c-sub small { display: block; font-size: 11.5px; font-weight: 700; color: var(--ink-3); white-space: nowrap; }
+.items .c-sub small.neg { color: var(--red); }
+.items input:disabled { background: #F3F5FA; color: var(--ink-3); }
+.modal { width: min(1000px, calc(100vw - 24px)); }
+.items .c-prod { min-width: 220px; }
+.items .c-un select { min-width: 108px; }
+.items .c-fat input { min-width: 80px; }
+.items .c-qtd input { min-width: 72px; }
+.items .c-val input { min-width: 100px; }
