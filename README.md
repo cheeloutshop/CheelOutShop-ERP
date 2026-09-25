@@ -60,6 +60,17 @@ Se o `config.js` estiver sem URL, o ERP funciona em **modo local**: login e dado
 - Evite editar a planilha à mão com o sistema aberto. Se editar, use **Configurações › Recarregar da planilha**.
 - Faça **backups periódicos** em Configurações › Exportar backup.
 
+
+## Atualizar o script da planilha (v10 — backup automático)
+
+1. Na planilha, abra **Extensões › Apps Script**, apague tudo e cole o novo `apps-script/Code.gs`. Salve.
+2. Selecione a função **`setup`** e clique em **Executar**. O Google vai pedir uma nova autorização (Google Drive e agendamento): aprove.
+3. Clique em **Implantar › Gerenciar implantações**, no lápis ✏️, em **Versão: Nova versão** e em **Implantar**. A URL continua a mesma.
+
+A partir daí, todo dia às 3h (e no primeiro login do dia) é salva uma cópia completa da planilha na pasta **"Cheel Out Shop — Backups do ERP"** do Google Drive. Ficam guardados os últimos 30 dias.
+
+As configurações avançadas (conexão, troca de senha, importar/exportar, dados de exemplo) continuam disponíveis no endereço `#/avancado` do site.
+
 ## Como os dados se ligam
 
 ```
@@ -77,7 +88,7 @@ index.html          → páginas, menu e tela de login
 config.js           → URL do Apps Script e e-mail de acesso (edite aqui)
 style.css           → visual (cores da marca)
 app.js              → toda a lógica do ERP e do login
-favicon.svg / favicon.png / apple-touch-icon.png → símbolo da marca
+favicon*.png / icon-*.png / apple-touch-icon.png / manifest.webmanifest → ícones do site e do app no celular
 logo.png            → logo da Cheel Out Shop (menu, login, animação e impressão)
 apps-script/Code.gs → API + login (cole no Apps Script da planilha)
 ```

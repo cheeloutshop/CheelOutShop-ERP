@@ -14,6 +14,8 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
+const APP_VERSAO = '10';
+const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -175,6 +177,7 @@ const Store = {
     if (this.online) this.queue.push(...ops);
     this.saveCache();
     render();
+    try { backupLocalDiario(); } catch (e) {}
     await this.flush();
   },
   async load() {
@@ -348,15 +351,17 @@ const ROUTES = {
   painel:   { t: 'Painel', s: 'Visão geral da Cheel Out Shop', fn: viewPainel },
   vendas:   { t: 'Vendas', s: 'Pedidos de venda, orçamentos e faturamento', fn: viewVendas },
   compras:  { t: 'Pedidos de compra', s: 'Compras de fornecedores e recebimento de mercadoria', fn: viewCompras },
-  contatos: { t: 'Clientes e fornecedores', s: 'Cadastro de contatos', fn: viewContatos },
+  clientes:     { t: 'Clientes', s: 'Cadastro de clientes', fn: el => viewContatos(el, 'Cliente') },
+  fornecedores: { t: 'Fornecedores', s: 'Cadastro de fornecedores', fn: el => viewContatos(el, 'Fornecedor') },
   produtos: { t: 'Produtos', s: 'Cadastro de produtos, preços e custos', fn: viewProdutos },
   estoque:  { t: 'Controle de estoque', s: 'Saldos, movimentações e balanço', fn: viewEstoque },
   receber:  { t: 'Contas a receber', s: 'Recebimentos de clientes', fn: () => viewContas('receber') },
   pagar:    { t: 'Contas a pagar', s: 'Pagamentos a fornecedores e despesas', fn: () => viewContas('pagar') },
-  config:   { t: 'Configurações', s: 'Conexão com Google Sheets e backup', fn: viewConfig },
+  config:   { t: 'Configurações', s: 'Backup automático', fn: viewConfig },
+  avancado: { t: 'Configurações avançadas', s: 'Conexão, acesso, importação e dados de exemplo', fn: viewConfigAvancado },
 };
 const UI = {}; // estado de filtros por tela
-function rota() { const r = location.hash.replace('#/', '').split('?')[0]; return ROUTES[r] ? r : 'painel'; }
+function rota() { let r = location.hash.replace('#/', '').split('?')[0]; if (r === 'contatos') r = 'clientes'; return ROUTES[r] ? r : 'painel'; }
 function render() {
   const r = rota();
   const R = ROUTES[r];
@@ -762,9 +767,15 @@ function faltaEstoque(v) {
   return faltas.length ? `<div class="note warn">Atenção: estoque insuficiente para ${faltas.map(esc).join('; ')}. O saldo ficará negativo.</div>` : '';
 }
 
+const NOVO_PROD = '__novo__';
+function prodOptionsPedido(sel) {
+  // "Selecione…" continua sendo a primeira opção; logo abaixo vem o atalho de cadastro
+  const o = prodOptions(sel), i = o.indexOf('</option>') + 9;
+  return o.slice(0, i) + `<option value="${NOVO_PROD}">➕ Cadastrar novo produto…</option>` + o.slice(i);
+}
 function itemRow(it, V) {
   return `<tr>
-    <td class="c-prod"><select data-i="prod">${prodOptions(it.produtoId)}</select></td>
+    <td class="c-prod"><select data-i="prod">${prodOptionsPedido(it.produtoId)}</select></td>
     <td class="c-qtd"><input data-i="qtd" inputmode="decimal" value="${esc(it.qtd ?? 1)}"></td>
     <td class="c-val"><input data-i="valor" inputmode="decimal" value="${dec(it.valor)}" placeholder="${V ? 'preço' : 'custo'}"></td>
     <td class="c-sub" data-i="sub"></td>
@@ -774,7 +785,6 @@ function itemRow(it, V) {
 
 function formPedido(tipo, p) {
   const V = tipo === 'vendas';
-  if (!Store.data.produtos.length) return toast('Cadastre produtos antes de lançar pedidos', 'err');
   const novo = !p;
   p = p ? { ...p, itens: p.itens.map(i => ({ ...i })) } : {
     numero: proxNumero(Store.data[tipo]), data: hoje(), status: V ? 'Em aberto' : 'Em aberto', canal: 'Loja física',
@@ -792,13 +802,38 @@ function formPedido(tipo, p) {
         ${field(V ? 'Cliente' : 'Fornecedor *', `<select name="contatoId" ${V ? '' : 'required'}>${opt(contatos, V ? p.clienteId : p.fornecedorId, V ? 'Consumidor final' : 'Selecione…')}</select>`, 'span2')}
         ${V ? field('Canal de venda', `<select name="canal">${opt(CANAIS, p.canal)}</select>`) : ''}
         ${field('Situação', `<select name="status" id="pedStatus">${opt(V ? ST_VENDA : ST_COMPRA, p.status)}</select>`)}
-        <div class="${V ? 'span2' : 'span2'}" style="display:flex;align-items:end"><button type="button" class="btn ghost sm" id="novoContato">${ICON.plus}Cadastrar ${V ? 'cliente' : 'fornecedor'}</button></div>
+        <div class="span2" style="display:flex;align-items:end"><button type="button" class="btn ghost sm" id="novoContato">${ICON.plus}Novo ${V ? 'cliente' : 'fornecedor'}</button></div>
+      </div>
+      <div class="inline-new" id="pnlContato" hidden>
+        <div class="inline-head"><b>Novo ${V ? 'cliente' : 'fornecedor'}</b><span class="muted">cadastro rápido — já fica selecionado neste pedido</span></div>
+        <div class="grid g4">
+          ${field('Nome / razão social *', '<input data-nc="nome" autocomplete="off">', 'span2')}
+          ${field('CPF / CNPJ', '<input data-nc="documento" autocomplete="off">')}
+          ${field('Telefone / WhatsApp', '<input data-nc="telefone" inputmode="tel" autocomplete="off">')}
+          ${field('E-mail', '<input data-nc="email" type="email" autocomplete="off">', 'span2')}
+          ${field('Cidade', '<input data-nc="cidade" autocomplete="off">')}
+          ${field('UF', '<input data-nc="uf" maxlength="2" autocomplete="off">')}
+        </div>
+        <div class="inline-actions"><button type="button" class="btn ghost sm" data-nc-cancel>Cancelar</button><button type="button" class="btn primary sm" data-nc-save>Salvar ${V ? 'cliente' : 'fornecedor'}</button></div>
       </div>
       <div class="section-t">Itens</div>
       <div class="items"><table>
         <thead><tr><th>Produto</th><th>Qtd</th><th>${V ? 'Preço unit.' : 'Custo unit.'}</th><th class="r">Subtotal</th><th></th></tr></thead>
         <tbody id="itensBody">${p.itens.map(i => itemRow(i, V)).join('')}</tbody>
-      </table><div class="items-add"><button type="button" class="btn ghost sm" id="addItem">${ICON.plus}Adicionar item</button></div></div>
+      </table><div class="items-add"><button type="button" class="btn ghost sm" id="addItem">${ICON.plus}Adicionar item</button><button type="button" class="btn ghost sm" id="addProdNovo">${ICON.plus}Cadastrar novo produto</button>${Store.data.produtos.length ? '' : '<span class="muted" style="font-size:13px;font-weight:700">Nenhum produto cadastrado ainda — cadastre aqui mesmo, sem sair do pedido.</span>'}</div></div>
+      <div class="inline-new" id="pnlProduto" hidden>
+        <div class="inline-head"><b>Novo produto</b><span class="muted">cadastro rápido — entra direto no item do pedido</span></div>
+        <div class="grid g4">
+          ${field('Nome do produto *', '<input data-np="nome" autocomplete="off">', 'span2')}
+          ${field('SKU / código', '<input data-np="sku" autocomplete="off">')}
+          ${field('Categoria', '<input data-np="categoria" list="dlCatsPed" autocomplete="off">' + `<datalist id="dlCatsPed">${[...new Set(Store.data.produtos.map(x => x.categoria).filter(Boolean))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>`)}
+          ${field('Unidade', `<select data-np="unidade">${opt(['un', 'cx', 'kg', 'g', 'L', 'm', 'par', 'kit', 'pct'], 'un')}</select>`)}
+          ${field('Custo (R$)' + (V ? '' : ' *'), '<input data-np="custo" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
+          ${field('Preço de venda (R$)' + (V ? ' *' : ''), '<input data-np="preco" inputmode="decimal" placeholder="0,00" autocomplete="off">')}
+          ${field('Estoque mínimo', '<input data-np="estoqueMin" inputmode="decimal" placeholder="0" autocomplete="off">')}
+        </div>
+        <div class="inline-actions"><button type="button" class="btn ghost sm" data-np-cancel>Cancelar</button><button type="button" class="btn primary sm" data-np-save>Salvar produto e usar no item</button></div>
+      </div>
       <div class="grid g4" style="margin-top:14px">
         ${field('Frete (R$)', inp('frete', dec(p.frete), 'inputmode="decimal" placeholder="0,00" id="pedFrete"'))}
         ${field('Desconto (R$)', inp('desconto', dec(p.desconto), 'inputmode="decimal" placeholder="0,00" id="pedDesc"'))}
@@ -821,7 +856,50 @@ function formPedido(tipo, p) {
         $('#tTotal').textContent = brl(s + num($('#pedFrete').value) - num($('#pedDesc').value));
       };
       tb.addEventListener('input', recalc);
+      // ---- cadastro rápido de produto
+      const pnlP = $('#pnlProduto', body);
+      let linhaAlvo = null;
+      const abrirProduto = tr => {
+        linhaAlvo = tr;
+        $$('[data-np]', pnlP).forEach(i => { i.value = i.tagName === 'SELECT' ? 'un' : ''; });
+        let n = Store.data.produtos.length + 1, sku;
+        do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
+        $('[data-np=sku]', pnlP).value = sku;
+        pnlP.hidden = false; pnlP.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        setTimeout(() => $('[data-np=nome]', pnlP).focus(), 50);
+      };
+      const fecharProduto = () => { pnlP.hidden = true; linhaAlvo = null; };
+      const salvarProduto = () => {
+        const g = k => $(`[data-np=${k}]`, pnlP).value.trim();
+        if (!g('nome')) { toast('Informe o nome do produto', 'err'); $('[data-np=nome]', pnlP).focus(); return; }
+        if (V && !num(g('preco'))) { toast('Informe o preço de venda', 'err'); $('[data-np=preco]', pnlP).focus(); return; }
+        if (!V && !num(g('custo'))) { toast('Informe o custo do produto', 'err'); $('[data-np=custo]', pnlP).focus(); return; }
+        if (g('sku') && Store.data.produtos.some(x => x.sku === g('sku'))) { toast('Já existe um produto com esse SKU', 'err'); return; }
+        const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: g('unidade') || 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora() };
+        Store.commit([up('produtos', pr)]);
+        // atualiza as listas de produto de todas as linhas, mantendo o que já estava escolhido
+        $$('[data-i=prod]', tb).forEach(s => { const v = s.value; s.innerHTML = prodOptionsPedido(v === NOVO_PROD ? '' : v); });
+        let tr = linhaAlvo && tb.contains(linhaAlvo) ? linhaAlvo : null;
+        if (!tr) { tr = $$('tr', tb).find(r => !$('[data-i=prod]', r).value); }
+        if (!tr) { tb.insertAdjacentHTML('beforeend', itemRow({ qtd: 1 }, V)); tr = $('tr:last-child', tb); }
+        $('[data-i=prod]', tr).value = pr.id;
+        $('[data-i=valor]', tr).value = dec(V ? pr.preco : pr.custo);
+        fecharProduto(); recalc();
+        const hint = $('.items-add .muted', body); if (hint) hint.remove();
+        toast('Produto cadastrado e adicionado ao pedido', 'ok');
+        setTimeout(() => $('[data-i=qtd]', tr).select(), 50);
+      };
+      $('[data-np-save]', pnlP).onclick = salvarProduto;
+      $('[data-np-cancel]', pnlP).onclick = fecharProduto;
+      pnlP.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); salvarProduto(); } });
+      $('#addProdNovo', body).onclick = () => abrirProduto(null);
+
       tb.addEventListener('change', e => {
+        if (e.target.dataset.i === 'prod' && e.target.value === NOVO_PROD) {
+          e.target.value = '';
+          abrirProduto(e.target.closest('tr'));
+          return;
+        }
         if (e.target.dataset.i === 'prod') {
           const pr = produto(e.target.value);
           if (pr) $('[data-i=valor]', e.target.closest('tr')).value = dec(V ? pr.preco : pr.custo);
@@ -834,18 +912,32 @@ function formPedido(tipo, p) {
       });
       $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRow({ qtd: 1 }, V)); recalc(); $('tr:last-child select', tb).focus(); };
       $('#pedFrete').oninput = recalc; $('#pedDesc').oninput = recalc;
-      $('#novoContato', body).onclick = () => {
-        const nome = prompt(`Nome do ${V ? 'cliente' : 'fornecedor'}:`);
-        if (!nome || !nome.trim()) return;
-        const c = { id: uid(), tipo: V ? 'Cliente' : 'Fornecedor', nome: nome.trim(), criadoEm: agora() };
-        Store.apply([up('contatos', c)]); Store.queue.push(up('contatos', c)); Store.saveCache(); Store.flush();
+      // ---- cadastro rápido de cliente / fornecedor
+      const pnlC = $('#pnlContato', body);
+      const fecharContato = () => { pnlC.hidden = true; };
+      const salvarContato = () => {
+        const g = k => $(`[data-nc=${k}]`, pnlC).value.trim();
+        if (!g('nome')) { toast('Informe o nome', 'err'); $('[data-nc=nome]', pnlC).focus(); return; }
+        const c = { id: uid(), tipo: V ? 'Cliente' : 'Fornecedor', nome: g('nome'), documento: g('documento'), telefone: g('telefone'), email: g('email'), cidade: g('cidade'), uf: g('uf').toUpperCase(), obs: '', criadoEm: agora() };
+        Store.commit([up('contatos', c)]);
         const sel = $('[name=contatoId]', body);
         sel.insertAdjacentHTML('beforeend', `<option value="${c.id}">${esc(c.nome)}</option>`);
         sel.value = c.id;
+        fecharContato();
+        toast((V ? 'Cliente' : 'Fornecedor') + ' cadastrado e selecionado', 'ok');
       };
+      $('#novoContato', body).onclick = () => {
+        $$('[data-nc]', pnlC).forEach(i => { i.value = ''; });
+        pnlC.hidden = false; setTimeout(() => $('[data-nc=nome]', pnlC).focus(), 50);
+      };
+      $('[data-nc-save]', pnlC).onclick = salvarContato;
+      $('[data-nc-cancel]', pnlC).onclick = fecharContato;
+      pnlC.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); salvarContato(); } });
       recalc();
     },
     onSubmit: (fd, body) => {
+      if (!$('#pnlProduto', body).hidden && $('[data-np=nome]', body).value.trim()) { toast('Termine o cadastro do produto (Salvar produto) ou clique em Cancelar', 'err'); return false; }
+      if (!$('#pnlContato', body).hidden && $('[data-nc=nome]', body).value.trim()) { toast('Termine o cadastro (Salvar) ou clique em Cancelar', 'err'); return false; }
       const itens = $$('#itensBody tr', body).map(tr => ({ produtoId: $('[data-i=prod]', tr).value, qtd: num($('[data-i=qtd]', tr).value), valor: r2($('[data-i=valor]', tr).value) }))
         .filter(i => i.produtoId && i.qtd > 0);
       if (!itens.length) { toast('Adicione pelo menos um item com produto e quantidade', 'err'); return false; }
@@ -1007,43 +1099,51 @@ function formBaixa(tipo, c) {
 /* =========================================================
    CONTATOS
    ========================================================= */
-function viewContatos(el) {
-  actions(`<button class="btn accent" id="novoCont">${ICON.plus}Novo contato</button>`);
-  const q = UI.qCont || '';
-  const f = UI.fCont || '';
-  const lista = Store.data.contatos.filter(c => !f || c.tipo === f || c.tipo === 'Ambos').filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade)).sort((a, b) => a.nome.localeCompare(b.nome));
+function viewContatos(el, tipo) {
+  const F = tipo === 'Fornecedor';
+  const k = F ? 'Forn' : 'Cli';
+  actions(`<button class="btn accent" id="novoCont">${ICON.plus}${F ? 'Novo fornecedor' : 'Novo cliente'}</button>`);
+  const q = UI['q' + k] || '';
+  const lista = Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos')
+    .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade)).sort((a, b) => a.nome.localeCompare(b.nome));
+  // resumo de movimento por contato
+  const mov = {};
+  (F ? Store.data.compras : Store.data.vendas).filter(p => p.status !== 'Cancelado').forEach(p => {
+    const id = F ? p.fornecedorId : p.clienteId; if (!id) return;
+    mov[id] = mov[id] || { n: 0, t: 0, ult: '' }; mov[id].n++; mov[id].t += num(p.total); if ((p.data || '') > mov[id].ult) mov[id].ult = p.data;
+  });
   el.innerHTML = `
-    <div class="toolbar">${searchBox('qCont', q, 'Buscar por nome, CPF/CNPJ, e-mail, telefone…')}
-      <div class="chips">${[['', 'Todos'], ['Cliente', 'Clientes'], ['Fornecedor', 'Fornecedores']].map(([v, t]) => `<button class="chip ${f === v ? 'on' : ''}" data-f="${v}">${t}</button>`).join('')}</div></div>
+    <div class="toolbar">${searchBox('q' + k, q, 'Buscar por nome, CPF/CNPJ, e-mail, telefone…')}</div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Nome</th><th>Tipo</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th></th></tr></thead>
-      <tbody>${lista.length ? lista.map(c => `<tr>
-        <td class="wrap strong">${esc(c.nome)}</td><td><span class="badge ${c.tipo === 'Fornecedor' ? 'amber' : ''}">${esc(c.tipo)}</span></td>
+      <thead><tr><th>Nome</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th class="r">${F ? 'Compras' : 'Vendas'}</th><th class="r">Total</th><th>Última</th><th></th></tr></thead>
+      <tbody>${lista.length ? lista.map(c => { const m = mov[c.id] || { n: 0, t: 0, ult: '' }; return `<tr>
+        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}</td>
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
-        <td class="act"><span class="inner"><button class="icon-btn" data-edit="${c.id}">${ICON.edit}</button><button class="icon-btn del" data-del="${c.id}">${ICON.del}</button></span></td>
-      </tr>`).join('') : emptyRow(7, 'Nenhum contato', '👥')}</tbody>
+        <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
+        <td class="act"><span class="inner"><button class="icon-btn" data-edit="${c.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${c.id}" title="Excluir">${ICON.del}</button></span></td>
+      </tr>`; }).join('') : emptyRow(9, Store.data.contatos.length ? 'Nenhum resultado' : (F ? 'Nenhum fornecedor cadastrado' : 'Nenhum cliente cadastrado'), F ? '🏭' : '👥')}</tbody>
     </table></div>`;
-  bindSearch('qCont', 'qCont');
-  $$('[data-f]', el).forEach(b => b.onclick = () => { UI.fCont = b.dataset.f; render(); });
-  $('#novoCont').onclick = () => formContato();
+  bindSearch('q' + k, 'q' + k);
+  $('#novoCont').onclick = () => formContato(null, tipo);
   $$('[data-edit]', el).forEach(b => b.onclick = () => formContato(contato(b.dataset.edit)));
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const c = contato(b.dataset.del);
     const usado = Store.data.vendas.some(v => v.clienteId === c.id) || Store.data.compras.some(v => v.fornecedorId === c.id) || [...Store.data.pagar, ...Store.data.receber].some(x => x.contatoId === c.id);
-    if (usado) return toast('Este contato está em pedidos ou contas e não pode ser excluído.', 'err');
+    if (usado) return toast('Este cadastro está em pedidos ou contas e não pode ser excluído.', 'err');
     confirmar(`Excluir <b>${esc(c.nome)}</b>?`, () => Store.commit([del('contatos', c.id)]), 'Excluir');
   });
 }
 
-function formContato(c) {
+function formContato(c, tipo = 'Cliente') {
   const novo = !c;
-  c = c || { tipo: 'Cliente' };
+  c = c || { tipo };
+  const nomeTipo = c.tipo === 'Fornecedor' ? 'fornecedor' : c.tipo === 'Ambos' ? 'cadastro' : 'cliente';
   Modal.open({
-    title: novo ? 'Novo contato' : 'Editar contato',
+    title: novo ? 'Novo ' + nomeTipo : 'Editar ' + nomeTipo,
     body: `<div class="grid g4">
       ${field('Nome / razão social *', inp('nome', c.nome, 'required'), 'span3')}
-      ${field('Tipo', `<select name="tipo">${opt(['Cliente', 'Fornecedor', 'Ambos'], c.tipo)}</select>`)}
+      ${field('É', `<select name="tipo">${opt([['Cliente', 'Cliente'], ['Fornecedor', 'Fornecedor'], ['Ambos', 'Cliente e fornecedor']], c.tipo)}</select>`)}
       ${field('CPF / CNPJ', inp('documento', c.documento))}
       ${field('Telefone / WhatsApp', inp('telefone', c.telefone, 'inputmode="tel"'))}
       ${field('E-mail', inp('email', c.email, 'type="email"'), 'span2')}
@@ -1053,15 +1153,79 @@ function formContato(c) {
     </div>`,
     onSubmit: fd => {
       Store.commit([up('contatos', { ...c, id: c.id || uid(), nome: fd.nome.trim(), tipo: fd.tipo, documento: fd.documento.trim(), telefone: fd.telefone.trim(), email: fd.email.trim(), cidade: fd.cidade.trim(), uf: fd.uf.trim().toUpperCase(), obs: fd.obs, criadoEm: c.criadoEm || agora() })]);
-      toast(novo ? 'Contato cadastrado' : 'Contato atualizado', 'ok');
+      toast(novo ? 'Cadastro salvo' : 'Cadastro atualizado', 'ok');
     },
   });
 }
 
 /* =========================================================
-   CONFIGURAÇÕES
+   CONFIGURAÇÕES — backup automático
    ========================================================= */
+const LS_SNAP = 'cheel_erp_snapshots_v1';
+function snapshotsLocais() { try { return JSON.parse(localStorage.getItem(LS_SNAP) || '[]'); } catch (e) { return []; } }
+/* Guarda 1 cópia por dia neste aparelho (últimos 7 dias) */
+function backupLocalDiario(forcar) {
+  const temDados = Object.values(Store.data).some(l => l.length);
+  if (!temDados) return false;
+  let snaps = snapshotsLocais();
+  const dia = hoje();
+  if (!forcar && snaps.some(s => s.dia === dia)) return false;
+  snaps = snaps.filter(s => s.dia !== dia);
+  snaps.unshift({ dia, em: agora(), dados: Store.data });
+  snaps = snaps.slice(0, 7);
+  for (let n = snaps.length; n > 0; n--) {
+    try { localStorage.setItem(LS_SNAP, JSON.stringify(snaps.slice(0, n))); return true; } catch (e) { /* sem espaço: guarda menos dias */ }
+  }
+  return false;
+}
+async function backupAutomatico() {
+  backupLocalDiario();
+  if (Store.online) { try { await Store.api({ action: 'backupAuto' }); } catch (e) { /* script antigo ou sem internet: tenta de novo no próximo login */ } }
+}
+
 function viewConfig(el) {
+  const snaps = snapshotsLocais();
+  const total = Object.values(Store.data).reduce((s, l) => s + l.length, 0);
+  el.innerHTML = `
+    <div class="card" style="max-width:860px">
+      <h3>${ICON.sync} Backup automático</h3>
+      ${Store.online ? `
+        <p class="muted" style="margin:0 0 14px;font-weight:700">Todo dia o sistema salva uma <b>cópia completa da planilha</b> no Google Drive da conta da loja, na pasta <b>“Cheel Out Shop — Backups do ERP”</b>. Ficam guardados os <b>últimos 30 dias</b>.</p>
+        <div id="bkDrive" class="note">Consultando backups no Google Drive…</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <button class="btn primary" id="bkAgora">${ICON.sync}Fazer backup agora</button>
+          <a class="btn ghost" id="bkPasta" href="https://drive.google.com/drive/search?q=Cheel%20Out%20Shop%20%E2%80%94%20Backups%20do%20ERP" target="_blank" rel="noopener">Abrir pasta no Google Drive</a>
+        </div>` : `
+        <div class="note warn">O sistema está em <b>modo local</b>: os dados ficam só neste navegador. Enquanto a planilha do Google não estiver conectada, o backup automático é guardado apenas aqui.</div>`}
+      <div class="section-t">Cópias guardadas neste aparelho (últimos 7 dias)</div>
+      ${snaps.length ? `<ul class="list">${snaps.map((s, i) => `<li><span class="l">${dataBR(s.dia)}<span class="s">${Object.values(s.dados || {}).reduce((a, l) => a + (l?.length || 0), 0)} registros · salvo às ${new Date(s.em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></span><button class="btn ghost sm" data-snap="${i}">${ICON.down}Baixar</button></li>`).join('')}</ul>`
+        : `<div class="empty" style="padding:24px">${total ? 'A primeira cópia será feita no próximo login.' : 'Nenhum dado lançado ainda.'}</div>`}
+    </div>`;
+  $$('[data-snap]', el).forEach(b => b.onclick = () => { const s = snaps[+b.dataset.snap]; baixar(`cheeloutshop-backup-${s.dia}.json`, JSON.stringify(s.dados, null, 2), 'application/json'); });
+  if (!Store.online) return;
+  const box = $('#bkDrive', el);
+  const mostrar = info => {
+    if (!info) return;
+    if (info.pastaUrl) $('#bkPasta', el).href = info.pastaUrl;
+    box.innerHTML = info.arquivos && info.arquivos.length
+      ? `<b>Último backup:</b> ${new Date(info.arquivos[0].data).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · ${info.arquivos.length} cópia(s) guardada(s)
+         <ul class="list" style="margin-top:8px">${info.arquivos.slice(0, 7).map(a => `<li><span class="l">${esc(a.nome)}</span><a class="btn ghost sm" href="${esc(a.url)}" target="_blank" rel="noopener">Abrir</a></li>`).join('')}</ul>`
+      : 'Nenhum backup no Google Drive ainda. O primeiro é feito automaticamente hoje.';
+  };
+  Store.api({ action: 'backupList' }).then(mostrar).catch(e => {
+    box.className = 'note warn';
+    box.innerHTML = /desconhecida/i.test(e.message) ? 'Para ativar o backup no Google Drive, atualize o script da planilha (veja o README, passo “Atualizar o script”).' : 'Não consegui consultar os backups: ' + esc(e.message);
+    $('#bkAgora', el).disabled = true;
+  });
+  $('#bkAgora', el).onclick = async ev => {
+    const b = ev.currentTarget; b.disabled = true; const t = b.innerHTML; b.textContent = 'Salvando cópia…';
+    try { await Store.api({ action: 'backupNow' }); backupLocalDiario(true); toast('Backup salvo no Google Drive', 'ok'); mostrar(await Store.api({ action: 'backupList' })); }
+    catch (e) { toast('Falhou: ' + e.message, 'err'); }
+    b.disabled = false; b.innerHTML = t;
+  };
+}
+
+function viewConfigAvancado(el) {
   const cfg = Store.cfg;
   const qtd = Object.entries(Store.data).map(([k, v]) => `${k}: ${v.length}`).join(' · ');
   el.innerHTML = `
@@ -1304,12 +1468,14 @@ const Auth = {
   entrar() {
     document.body.classList.remove('locked');
     $('#userMail').textContent = this.sess.email;
+    $('#appVer').textContent = `Versão ${APP_VERSAO} · ${APP_DATA_VERSAO}`;
     $('.user-chip .avatar').textContent = this.sess.email[0].toUpperCase();
     setSync(Store.online ? 'sync' : 'local');
     render();
     Store.load().then(async () => {
       render();
       await migrarLocal();
+      backupAutomatico();
     });
   },
   async logout() {
@@ -1585,7 +1751,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
   $('#usarLocal') && ($('#usarLocal').onclick = () => trocarConexao(''));
   // prévia: clicar na logo da tela de login toca a animação (não faz login)
   $$('.hero-logo, img.auth-mobile-brand').forEach(l => { l.style.cursor = 'pointer'; l.title = 'Ver animação'; l.onclick = () => animarEntrada(() => {}); });
-  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v9</span>');
+  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v' + APP_VERSAO + '</span>');
   const first = $('input:not([type=hidden]):not([type=checkbox])', card);
   if (first && !first.value) first.focus(); else { const s = $('input[type=password]', card); s && s.focus(); }
 
