@@ -1557,6 +1557,9 @@ function renderAuth(tela, aviso = '', extra = {}) {
     $('#forcaTxt').textContent = !ns.value ? 'Use letras maiúsculas, minúsculas, números e símbolos.' : ['Muito fraca', 'Fraca', 'Razoável', 'Boa', 'Forte'][f];
   };
   $('#usarLocal') && ($('#usarLocal').onclick = () => trocarConexao(''));
+  // prévia: clicar na logo da tela de login toca a animação (não faz login)
+  $$('.hero-logo, img.auth-mobile-brand').forEach(l => { l.style.cursor = 'pointer'; l.title = 'Ver animação'; l.onclick = () => animarEntrada(() => {}); });
+  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v7</span>');
   const first = $('input:not([type=hidden]):not([type=checkbox])', card);
   if (first && !first.value) first.focus(); else { const s = $('input[type=password]', card); s && s.focus(); }
 

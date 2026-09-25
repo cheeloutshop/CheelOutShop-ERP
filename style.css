@@ -261,7 +261,7 @@ body.locked .auth { display: grid; grid-template-columns: minmax(0, 1.05fr) minm
     radial-gradient(900px 500px at 110% 110%, rgba(255,212,0,.22), transparent 60%),
     radial-gradient(700px 400px at -10% -10%, rgba(42,107,224,.45), transparent 60%),
     linear-gradient(160deg, var(--blue-800), var(--blue-900));
-  display: flex; align-items: center; justify-content: center; padding: clamp(24px, 6vh, 56px) clamp(32px, 5vw, 72px); overflow-y: auto;
+  display: flex; align-items: center; justify-content: center; padding: clamp(24px, 6vh, 56px) clamp(32px, 5vw, 72px); overflow: hidden;
 }
 .auth-hero::after {
   content: ''; position: absolute; right: -120px; bottom: -120px; width: 420px; height: 420px; border-radius: 50%;
@@ -377,3 +377,5 @@ body.locked .auth { display: grid; grid-template-columns: minmax(0, 1.05fr) minm
 
 img.auth-mobile-brand { display: none; }
 @media (max-width: 900px) { img.auth-mobile-brand { display: block; } }
+
+.auth-mode .ver { opacity: .6; }
