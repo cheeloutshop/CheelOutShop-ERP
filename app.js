@@ -5,18 +5,20 @@
 'use strict';
 
 const COLS = {
-  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos'],
-  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick'],
+  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos', 'consigId', 'consigImposto', 'consigComissao'],
+  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick', 'consignante', 'consigImposto', 'consigComissao'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
   compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
   vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'comissaoPct', 'comissao'],
   insumos:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm'],
   plataformas: ['id', 'nome', 'comissao', 'ativo', 'criadoEm'],
+  saques:     ['id', 'data', 'plataforma', 'valor', 'obs', 'criadoEm'],
   pagar:      ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '17';
+const APP_VERSAO = '18';
+const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -35,7 +37,7 @@ const ST_COMPRA = ['Em aberto', 'Recebido', 'Cancelado'];
 const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];   // Pix = à vista; os demais podem parcelar
 const UN_COMPRA = [['UN', 'Unidade'], ['CX', 'Caixa'], ['FD', 'Fardo'], ['PCT', 'Pacote'], ['DZ', 'Dúzia'], ['KIT', 'Kit'], ['PAR', 'Par'], ['OUTRA', 'Outra']];
 const fatorItem = it => (!it.un || it.un === 'UN') ? 1 : Math.max(1, num(it.fator) || 1);
-const CAT_PAGAR = ['Fornecedores', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
+const CAT_PAGAR = ['Fornecedores', 'Repasse consignado', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
 const CAT_RECEBER = ['Vendas', 'Serviços', 'Outros'];
 
 /* ---------------- Helpers ---------------- */
@@ -304,12 +306,14 @@ function efeitosVenda(v) {
     }
     if (!temPago) {
       recs.forEach(r => ops.push(del('receber', r.id)));
-      const liquido = v.formaPgto === 'Repasse da plataforma' ? r2(num(v.total) - num(v.comissao)) : num(v.total);
-      const parc = gerarParcelas(liquido, v.parcelas, v.vencimento || v.data);
-      const aVista = A_VISTA.includes(v.formaPgto) && parc.length === 1;
+      const jamble = ehCanalJamble(v.canal);
+      const repasse = jamble || v.formaPgto === 'Repasse da plataforma';
+      const liquido = repasse ? r2(num(v.total) - num(v.comissao)) : num(v.total);
+      const parc = gerarParcelas(liquido, jamble ? 1 : v.parcelas, jamble ? addDias(v.data || hoje(), JAMBLE_DIAS) : (v.vencimento || v.data));
+      const aVista = !repasse && A_VISTA.includes(v.formaPgto) && parc.length === 1;
       for (const p of parc) {
         ops.push(up('receber', {
-          id: uid(), descricao: `Venda nº ${v.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (v.formaPgto === 'Repasse da plataforma' ? ` · repasse ${v.canal || 'plataforma'} (líquido)` : ''),
+          id: uid(), descricao: `Venda nº ${v.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (repasse ? ` · repasse ${v.canal || 'plataforma'} (líquido)` : ''),
           contatoId: v.clienteId, categoria: 'Vendas', vencimento: p.vencimento, valor: p.valor,
           status: aVista ? 'Pago' : 'Aberto', pagoEm: aVista ? v.data : '', valorPago: aVista ? p.valor : '',
           origem: 'venda', origemId: v.id, obs: v.formaPgto || '', criadoEm: agora(),
@@ -318,6 +322,44 @@ function efeitosVenda(v) {
     }
   } else {
     recs.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('receber', r.id)));
+  }
+  ops.push(...efeitosConsignado(v));
+  return ops;
+}
+const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+
+/* Consignação: produtos de terceiros revendidos sem custo.
+   Repasse ao dono = valor vendido − taxa da plataforma (proporcional) − imposto % − comissão % */
+function taxasConsig(p) {
+  if (!p || !p.consigId) return null;
+  const dono = contato(p.consigId);
+  const imp = String(p.consigImposto ?? '') !== '' ? num(p.consigImposto) : num(dono?.consigImposto);
+  const com = String(p.consigComissao ?? '') !== '' ? num(p.consigComissao) : num(dono?.consigComissao);
+  return { donoId: p.consigId, imposto: imp, comissao: com };
+}
+function calcRepasse(v, it) {
+  const tx = taxasConsig(produto(it.produtoId)); if (!tx) return null;
+  const bruto = (v.itens || []).reduce((s, i) => s + num(i.qtd) * num(i.valor), 0);
+  const sub = num(it.qtd) * num(it.valor), prop = bruto ? sub / bruto : 0;
+  const vendido = r2(num(v.total) * prop);                 // já com o desconto rateado
+  const taxaPlat = r2(num(v.comissao) * prop);
+  const imposto = r2(vendido * tx.imposto / 100), comissao = r2(vendido * tx.comissao / 100);
+  return { ...tx, vendido, taxaPlat, impostoV: imposto, comissaoV: comissao, repasse: r2(vendido - taxaPlat - imposto - comissao) };
+}
+function efeitosConsignado(v) {
+  const ops = [];
+  const pags = Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === v.id);
+  if (pags.some(r => r.status === 'Pago')) return ops;   // já repassado: não mexe
+  pags.forEach(r => ops.push(del('pagar', r.id)));
+  if (v.status !== 'Atendido') return ops;
+  const venc = ehCanalJamble(v.canal) ? addDias(v.data || hoje(), JAMBLE_DIAS) : (v.vencimento || v.data || hoje());
+  for (const it of v.itens || []) {
+    const c = calcRepasse(v, it); if (!c || c.repasse <= 0) continue;
+    ops.push(up('pagar', {
+      id: uid(), descricao: `Repasse consignado · venda nº ${v.numero} · ${nomeProduto(it.produtoId)}`, contatoId: c.donoId, categoria: 'Repasse consignado',
+      vencimento: venc, valor: c.repasse, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'consig', origemId: v.id,
+      obs: `Vendido ${brl(c.vendido)} − taxa ${v.canal || 'plataforma'} ${brl(c.taxaPlat)} − imposto ${fmtPct(c.imposto)}% ${brl(c.impostoV)} − comissão ${fmtPct(c.comissao)}% ${brl(c.comissaoV)}`, criadoEm: agora(),
+    }));
   }
   return ops;
 }
@@ -433,7 +475,7 @@ const ROUTES = {
   estoque:  { t: 'Controle de estoque', s: 'Saldos, movimentações e balanço', fn: viewEstoque },
   receber:  { t: 'Contas a receber', s: 'Recebimentos de clientes', fn: () => viewContas('receber') },
   pagar:    { t: 'Contas a pagar', s: 'Pagamentos a fornecedores e despesas', fn: () => viewContas('pagar') },
-  config:   { t: 'Configurações', s: 'Backup automático', fn: viewConfig },
+  config:   { t: 'Configurações', s: 'Plataformas, consignação e backup', fn: viewConfig },
   avancado: { t: 'Configurações avançadas', s: 'Conexão, acesso, importação e dados de exemplo', fn: viewConfigAvancado },
 };
 const UI = {}; // estado de filtros por tela
@@ -465,7 +507,7 @@ function emptyRow(cols, msg, icone = '📦') { return `<tr><td colspan="${cols}"
    PAINEL
    ========================================================= */
 function viewPainel(el) {
-  actions(`<a class="btn ghost" href="#/compras">${ICON.plus}Compra</a><button class="btn accent" id="novaVendaTop">${ICON.plus}Nova venda</button>`);
+  actions(`<button class="btn ghost" id="impEtqTop">📄 Importar etiquetas (PDF)</button><a class="btn ghost" href="#/compras">${ICON.plus}Compra</a><button class="btn accent" id="novaVendaTop">${ICON.plus}Nova venda</button>`);
   const d = Store.data;
   const mes = mesAtual();
   const vendasOk = d.vendas.filter(v => v.status === 'Atendido');
@@ -501,7 +543,7 @@ function viewPainel(el) {
   const somaP = proximas.filter(c => c._t === 'pagar').reduce((s, c) => s + num(c.valor), 0);
   const somaR = proximas.filter(c => c._t === 'receber').reduce((s, c) => s + num(c.valor), 0);
 
-  el.innerHTML = `
+  el.innerHTML = barraJamble(true) + `
     <div class="kpis">
       <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${vMes.some(v => num(v.comissao)) ? ` · comissões <span class="neg">${brl(vMes.reduce((s, v) => s + num(v.comissao), 0))}</span>` : ''}</div></div>
       <div class="card kpi green"><div class="lbl">A receber (em aberto)</div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
@@ -541,9 +583,56 @@ function viewPainel(el) {
           <li><span class="l">Nº ${esc(v.numero)} · ${esc(nomeContato(v.clienteId) || 'Consumidor final')}<span class="s">${dataBR(v.data)} · ${esc(v.canal || '')}</span></span><span>${badgeVenda(v.status)} <span class="num strong">${brl(v.total)}</span></span></li>`).join('')}</ul>`
           : '<div class="empty">Nenhuma venda lançada ainda</div>'}
       </div>
-    </div>`;
+    </div>
+    ${fluxoCaixaHTML(valorEst)}`;
   $('#novaVendaTop').onclick = () => formVenda();
+  $('#impEtqTop').onclick = abrirImportarEtiquetas;
+  ligarBarraJamble(el);
+  const fcm = $('#fcMes', el); if (fcm) fcm.onchange = e => { UI.fcMes = e.target.value || mesAtual(); render(); };
   $$('[data-fv]', el).forEach(b => b.onclick = () => { UI.fVenc = b.dataset.fv; render(); });
+}
+
+/* Fluxo de caixa: o que entrou e saiu de verdade (baixas), e a posição da loja hoje */
+function fluxoCaixaHTML(valorEst) {
+  const d = Store.data, mes = UI.fcMes || mesAtual();
+  const pago = c => num(c.valorPago || c.valor);
+  const rotuloE = r => r.origem === 'venda' ? (ehCanalJamble(vendaDe(r.origemId)?.canal) ? 'Vendas Jamble (saques)' : 'Vendas') : (r.categoria || 'Outros');
+  const ent = d.receber.filter(c => c.status === 'Pago' && (c.pagoEm || '').startsWith(mes));
+  const sai = d.pagar.filter(c => c.status === 'Pago' && (c.pagoEm || '').startsWith(mes));
+  const agrupa = (l, f) => Object.entries(l.reduce((m, c) => { const k = f(c); m[k] = (m[k] || 0) + pago(c); return m; }, {})).sort((a, b) => b[1] - a[1]);
+  const tE = r2(ent.reduce((s, c) => s + pago(c), 0)), tS = r2(sai.reduce((s, c) => s + pago(c), 0));
+  const ate = hoje();
+  const caixa = r2(d.receber.filter(c => c.status === 'Pago' && (c.pagoEm || '') <= ate).reduce((s, c) => s + pago(c), 0) - d.pagar.filter(c => c.status === 'Pago' && (c.pagoEm || '') <= ate).reduce((s, c) => s + pago(c), 0));
+  const aRec = r2(d.receber.filter(c => c.status !== 'Pago').reduce((s, c) => s + num(c.valor), 0));
+  const aPag = r2(d.pagar.filter(c => c.status !== 'Pago').reduce((s, c) => s + num(c.valor), 0));
+  const consig = r2(d.pagar.filter(c => c.status !== 'Pago' && c.origem === 'consig').reduce((s, c) => s + num(c.valor), 0));
+  const pos = r2(caixa + aRec - aPag + valorEst);
+  const [yy, mm] = mes.split('-');
+  const lanc = [...ent.map(c => ({ ...c, _e: 1 })), ...sai.map(c => ({ ...c, _e: 0 }))].sort((a, b) => (a.pagoEm + a.criadoEm).localeCompare(b.pagoEm + b.criadoEm));
+  const lista = l => l.length ? l.map(([k, v]) => `<li><span>${esc(k)}</span><b>${brl(v)}</b></li>`).join('') : '<li class="muted"><span>Nada neste mês</span></li>';
+  return `
+    <div class="card fc">
+      <h3 style="justify-content:space-between">Fluxo de caixa <input type="month" id="fcMes" value="${esc(mes)}" title="Mês"></h3>
+      <div class="fc-grid">
+        <div class="fc-col in"><div class="fc-h">Entrou (recebido)</div><ul>${lista(agrupa(ent, rotuloE))}</ul><div class="fc-t">Total <b class="pos">${brl(tE)}</b></div></div>
+        <div class="fc-col out"><div class="fc-h">Saiu (pago)</div><ul>${lista(agrupa(sai, c => c.categoria || 'Outros'))}</ul><div class="fc-t">Total <b class="neg">${brl(tS)}</b></div></div>
+        <div class="fc-col res"><div class="fc-h">Resultado de ${MESES[+mm - 1]}/${yy}</div><div class="fc-big ${tE - tS < 0 ? 'neg' : 'pos'}">${brl(tE - tS)}</div><small class="muted">entradas − saídas do mês (só o que foi de fato recebido ou pago)</small></div>
+      </div>
+      <div class="section-t">Posição hoje — para conferir os valores</div>
+      <div class="fc-pos">
+        <div><span>Caixa acumulado</span><b class="${caixa < 0 ? 'neg' : ''}">${brl(caixa)}</b><small>tudo recebido − tudo pago</small></div>
+        <div><span>+ A receber</span><b class="pos">${brl(aRec)}</b><small>em aberto (inclui Jamble)</small></div>
+        <div><span>− A pagar</span><b class="neg">${brl(aPag)}</b><small>${consig ? `inclui ${brl(consig)} de repasse consignado` : 'em aberto'}</small></div>
+        <div><span>+ Estoque</span><b>${brl(valorEst)}</b><small>a preço de custo</small></div>
+        <div class="tot"><span>= Posição da loja</span><b class="${pos < 0 ? 'neg' : ''}">${brl(pos)}</b><small>caixa + a receber − a pagar + estoque</small></div>
+      </div>
+      <details class="fc-det"><summary>Ver os ${lanc.length} lançamento(s) do mês</summary>
+        ${lanc.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line);margin-top:10px"><table>
+          <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th class="r">Entrada</th><th class="r">Saída</th></tr></thead>
+          <tbody>${lanc.map(c => `<tr><td>${dataBR(c.pagoEm)}</td><td class="wrap">${esc(c.descricao)}</td><td class="muted">${esc(c._e ? rotuloE(c) : c.categoria)}</td><td class="r pos">${c._e ? brl(pago(c)) : ''}</td><td class="r neg">${c._e ? '' : brl(pago(c))}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td colspan="3">Total</td><td class="r">${brl(tE)}</td><td class="r">${brl(tS)}</td></tr></tfoot></table></div>` : '<div class="empty">Nenhum recebimento ou pagamento neste mês.</div>'}
+      </details>
+    </div>`;
 }
 
 function chart(labels, a, b) {
@@ -597,7 +686,7 @@ function viewProdutos(el) {
         return `<tr>
           <td class="c-foto">${fotoHTML(p, 'cart-foto')}</td>
           <td class="muted">${esc(p.sku)}</td>
-          <td class="wrap strong">${esc(p.nome)} ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}</td>
+          <td class="wrap strong">${esc(p.nome)} ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
           <td>${esc(p.categoria)}</td>
           <td class="r">${brl(p.custo)}</td><td class="r strong">${brl(p.preco)}</td>
           <td class="r ${mg < 0 ? 'neg' : ''}">${mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td>
@@ -642,12 +731,34 @@ function formProduto(p) {
         ${field('Situação', `<select name="ativo">${opt([['sim', 'Ativo'], ['nao', 'Inativo']], p.ativo)}</select>`)}
       </div></div>
       <div class="note" id="pMargem"></div>
+      <div class="section-t">Consignação (produto de terceiro)</div>
+      <div class="grid g4">
+        ${field('Dono do produto', `<select name="consigId" id="pConsig">${opt(consignantes().map(c => [c.id, c.nome]), p.consigId, 'Produto próprio (não é consignado)')}</select>`, 'span2')}
+        ${field('Imposto (%)', inp('consigImposto', String(p.consigImposto ?? '') !== '' ? fmtPct(num(p.consigImposto)) : '', 'inputmode="decimal" id="pCImp" placeholder="do cadastro"'))}
+        ${field('Comissão (%)', inp('consigComissao', String(p.consigComissao ?? '') !== '' ? fmtPct(num(p.consigComissao)) : '', 'inputmode="decimal" id="pCCom" placeholder="do cadastro"'))}
+      </div>
+      <div class="note consig-note" id="pConsigInfo"></div>
       ${novo ? `<div class="section-t">Estoque inicial (opcional)</div><div class="grid g4">${field('Quantidade inicial', inp('estoqueIni', '', 'inputmode="decimal" placeholder="0"'))}</div>` : ''}`,
     onOpen: body => {
       const upd = () => { const c = num($('#pCusto').value), v = num($('#pPreco').value); $('#pMargem', body).textContent = v ? `Margem: ${((v - c) / v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% · Lucro por unidade: ${brl(v - c)} · Markup: ${c ? (v / c).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '–'}x` : 'Informe custo e preço para ver a margem.'; };
       ligarMarkup($('#pCusto'), $('#pMarkup'), $('#pPreco'));
       ['#pCusto', '#pPreco', '#pMarkup'].forEach(s => $(s).addEventListener('input', upd)); upd();
       fotoCampo = campoFoto($('#pFoto', body), p.foto || '', () => $('[name=nome]', body).value);
+      const cons = () => {
+        const dono = contato($('#pConsig').value), box = $('#pConsigInfo', body);
+        $('#pCImp').disabled = $('#pCCom').disabled = !dono;
+        $('#pCusto').readOnly = !!dono;
+        if (!dono) { box.hidden = true; return; }
+        if (num($('#pCusto').value)) { $('#pCusto').value = ''; upd(); }
+        $('#pCImp').placeholder = fmtPct(num(dono.consigImposto)) + ' (padrão)'; $('#pCCom').placeholder = fmtPct(num(dono.consigComissao)) + ' (padrão)';
+        const imp = $('#pCImp').value.trim() !== '' ? num($('#pCImp').value) : num(dono.consigImposto);
+        const com = $('#pCCom').value.trim() !== '' ? num($('#pCCom').value) : num(dono.consigComissao);
+        const pr = num($('#pPreco').value) || 100, pj = num(plataformaPorNome('Jamble')?.comissao ?? 10);
+        const r = pr - pr * pj / 100 - pr * imp / 100 - pr * com / 100;
+        box.hidden = false;
+        box.innerHTML = `Custo zero (o produto é de <b>${esc(dono.nome)}</b>). Exemplo de venda na Jamble por <b>${brl(pr)}</b>: − taxa Jamble ${fmtPct(pj)}% ${brl(pr * pj / 100)} − imposto ${fmtPct(imp)}% ${brl(pr * imp / 100)} − comissão ${fmtPct(com)}% ${brl(pr * com / 100)} = <b>repasse ${brl(r)}</b> · fica para a loja ${brl(pr * com / 100)}`;
+      };
+      ['#pConsig', '#pCImp', '#pCCom', '#pPreco'].forEach(q => $(q).addEventListener('input', cons)); $('#pConsig').addEventListener('change', cons); cons();
     },
     onSubmit: fd => {
       if (fotoCampo && fotoCampo.ocupado()) { toast('Aguarde a foto terminar de carregar', 'err'); return false; }
@@ -655,6 +766,10 @@ function formProduto(p) {
       if (sku && Store.data.produtos.some(x => x.sku === sku && x.id !== p.id)) { toast('Já existe um produto com esse SKU', 'err'); return false; }
       const rec = { ...p, id: p.id || uid(), nome: fd.nome.trim(), sku, categoria: fd.categoria.trim(), unidade: fd.unidade, custo: r2(fd.custo), preco: r2(fd.preco), estoqueMin: num(fd.estoqueMin), ean: fd.ean.trim(), ncm: fd.ncm.trim(), ativo: fd.ativo, criadoEm: p.criadoEm || agora() };
       rec.foto = fotoCampo ? fotoCampo.valor() : (p.foto || '');
+      rec.consigId = fd.consigId || '';
+      rec.consigImposto = rec.consigId && String(fd.consigImposto || '').trim() !== '' ? num(fd.consigImposto) : '';
+      rec.consigComissao = rec.consigId && String(fd.consigComissao || '').trim() !== '' ? num(fd.consigComissao) : '';
+      if (rec.consigId) rec.custo = 0;
       const ops = [up('produtos', rec)];
       if (novo && num(fd.estoqueIni) > 0) ops.push(up('movimentos', { id: uid(), data: hoje(), produtoId: rec.id, tipo: 'entrada', quantidade: num(fd.estoqueIni), custoUnit: rec.custo, origem: 'manual', origemId: '', obs: 'Estoque inicial', criadoEm: agora() }));
       Store.commit(ops);
@@ -671,7 +786,7 @@ function viewEstoque(el) {
   const tab = UI.tabEst || 'saldos';
   const sal = saldos();
   const q = UI.qEst || '';
-  let html = `<div class="tabs"><button class="tab ${tab === 'saldos' ? 'on' : ''}" data-tab="saldos">Saldos</button><button class="tab ${tab === 'movs' ? 'on' : ''}" data-tab="movs">Movimentações</button></div>`;
+  let html = `<div class="tabs"><button class="tab ${tab === 'saldos' ? 'on' : ''}" data-tab="saldos">Saldos</button><button class="tab ${tab === 'movs' ? 'on' : ''}" data-tab="movs">Movimentações</button><button class="tab ${tab === 'bals' ? 'on' : ''}" data-tab="bals">Balanços</button></div>`;
   if (tab === 'saldos') {
     const f = UI.fEst || 'todos';
     const lista = Store.data.produtos.filter(p => p.ativo !== 'nao').filter(p => match(q, p.nome, p.sku, p.categoria))
@@ -693,6 +808,18 @@ function viewEstoque(el) {
         }).join('') : emptyRow(9, 'Nenhum produto')}</tbody>
         ${lista.length ? `<tfoot><tr><td colspan="2">Total (${lista.length} produtos)</td><td class="r">${qtdFmt(totQ)}</td><td></td><td></td><td class="r">${brl(totV)}</td><td class="r">${brl(totVV)}</td><td colspan="2"></td></tr></tfoot>` : ''}
       </table></div>`;
+  } else if (tab === 'bals') {
+    const bs = balancosFeitos();
+    html += `<div class="table-wrap"><table>
+      <thead><tr><th>Data</th><th class="r">Ajustes</th><th class="r">Sobras (valor)</th><th class="r">Faltas (valor)</th><th class="r">Resultado</th><th></th></tr></thead>
+      <tbody>${bs.length ? bs.map((b, i) => { const t = totaisBalanco(b.linhas); return `<tr><td class="strong">${dataBR(b.data)}</td><td class="r">${b.linhas.length}</td><td class="r pos">+${brl(t.vMais)}</td><td class="r neg">−${brl(t.vMenos)}</td><td class="r strong ${t.liq < 0 ? 'neg' : 'pos'}">${t.liq < 0 ? '−' : '+'}${brl(Math.abs(t.liq))}</td>
+        <td class="act"><button class="btn ghost sm" data-balpdf="${i}">📄 PDF</button></td></tr>`; }).join('') : emptyRow(6, 'Nenhum balanço aplicado ainda. Use o botão “Balanço / inventário”.', '📋')}</tbody></table></div>`;
+    el.innerHTML = html;
+    $$('[data-tab]', el).forEach(b => b.onclick = () => { UI.tabEst = b.dataset.tab; render(); });
+    $('#novoMov').onclick = () => formMov();
+    $('#balanco').onclick = () => formBalanco();
+    $$('[data-balpdf]', el).forEach(b => b.onclick = () => { const x = bs[+b.dataset.balpdf]; gerarPdfBalanco({ data: x.data, linhas: x.linhas }); });
+    return;
   } else {
     const fp = UI.fpMov || '';
     const lista = Store.data.movimentos.filter(m => !fp || m.produtoId === fp)
@@ -761,27 +888,151 @@ function formBalanco() {
   const sal = saldos();
   const prods = Store.data.produtos.filter(p => p.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
   if (!prods.length) return toast('Cadastre um produto primeiro', 'err');
+  const linhas = fd => prods.map(p => {
+    const v = fd['b_' + p.id];
+    if (v === undefined || String(v).trim() === '') return null;
+    const sis = sal[p.id] || 0, cont = num(v), dif = cont - sis;
+    return { id: p.id, nome: p.nome, sku: p.sku || '', un: p.unidade || 'un', sistema: sis, contado: cont, dif, custo: num(p.custo), valor: dif * num(p.custo) };
+  }).filter(Boolean);
+  const lerForm = body => Object.fromEntries($$('input[name]', body).map(i => [i.name, i.value]));
   Modal.open({
-    title: 'Balanço / inventário', submit: 'Aplicar balanço',
-    body: `<p class="muted" style="margin:0 0 12px;font-weight:700">Informe a quantidade contada fisicamente. Deixe em branco os produtos que não foram contados. O sistema lança a diferença como entrada ou saída.</p>
-      <div class="grid g2" style="margin-bottom:12px">${field('Data do balanço', inp('data', hoje(), 'type="date"'))}</div>
-      <div class="items"><table><thead><tr><th>Produto</th><th class="r">Saldo no sistema</th><th class="r">Contado</th></tr></thead><tbody>
-      ${prods.map(p => `<tr><td class="wrap">${esc(p.nome)} <span class="muted">${esc(p.sku || '')}</span></td><td class="r">${qtdFmt(sal[p.id] || 0)}</td><td class="c-qtd"><input name="b_${p.id}" inputmode="decimal"></td></tr>`).join('')}
-      </tbody></table></div>`,
+    title: 'Balanço / inventário', submit: 'Aplicar balanço e gerar PDF',
+    body: `<div id="balWrap"><p class="muted" style="margin:0 0 12px;font-weight:700">Informe a quantidade contada fisicamente. Deixe em branco os produtos que não foram contados. O sistema lança a diferença como entrada ou saída e gera um PDF com as sobras, as faltas e os valores.</p>
+      <div class="grid g2" style="margin-bottom:12px">${field('Data do balanço', inp('data', hoje(), 'type="date"'))}${field('Buscar produto', '<input type="search" id="balQ" placeholder="nome ou SKU…">')}</div>
+      <div class="items"><table><thead><tr><th>Produto</th><th class="r">Sistema</th><th class="r">Contado</th><th class="r">Diferença</th><th class="r">Valor</th></tr></thead><tbody>
+      ${prods.map(p => `<tr data-bl="${p.id}" data-q="${esc(norm(p.nome + ' ' + (p.sku || '')))}"><td class="wrap">${esc(p.nome)} <span class="muted">${esc(p.sku || '')}</span></td><td class="r">${qtdFmt(sal[p.id] || 0)}</td><td class="c-qtd"><input name="b_${p.id}" inputmode="decimal"></td><td class="r bl-dif"></td><td class="r bl-val"></td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="bal-res" id="balRes"></div>
+      <div style="margin-top:10px"><button type="button" class="btn ghost sm" id="balPrev">📄 Gerar PDF da contagem (sem aplicar)</button></div></div>`,
+    onOpen: body => {
+      const upd = () => {
+        const fd = lerForm(body), ls = linhas(fd), por = Object.fromEntries(ls.map(l => [l.id, l]));
+        $$('tr[data-bl]', body).forEach(tr => {
+          const l = por[tr.dataset.bl];
+          $('.bl-dif', tr).innerHTML = l && Math.abs(l.dif) > 1e-9 ? `<b class="${l.dif > 0 ? 'pos' : 'neg'}">${l.dif > 0 ? '+' : '−'}${qtdFmt(Math.abs(l.dif))}</b>` : l ? '<span class="muted">ok</span>' : '';
+          $('.bl-val', tr).innerHTML = l && Math.abs(l.dif) > 1e-9 ? `<span class="${l.dif > 0 ? 'pos' : 'neg'}">${l.dif > 0 ? '+' : '−'}${brl(Math.abs(l.valor))}</span>` : '';
+        });
+        const t = totaisBalanco(ls);
+        $('#balRes', body).innerHTML = ls.length ? `<span>${ls.length} contado(s)</span><span class="pos">Sobras: +${qtdFmt(t.qMais)} un · +${brl(t.vMais)}</span><span class="neg">Faltas: −${qtdFmt(t.qMenos)} un · −${brl(t.vMenos)}</span><span>Resultado: <b class="${t.liq < 0 ? 'neg' : 'pos'}">${t.liq < 0 ? '−' : '+'}${brl(Math.abs(t.liq))}</b></span>` : '<span class="muted">Nenhum produto contado ainda.</span>';
+      };
+      $('#balWrap', body).addEventListener('input', e => { if (e.target.id === 'balQ') { const q = norm(e.target.value); $$('tr[data-bl]', body).forEach(tr => { tr.hidden = !!q && !tr.dataset.q.includes(q); }); return; } upd(); });
+      $('#balPrev', body).onclick = () => {
+        const fd = lerForm(body), ls = linhas(fd);
+        if (!ls.length) return toast('Informe a contagem de pelo menos um produto', 'err');
+        gerarPdfBalanco({ data: fd.data || hoje(), linhas: ls, previa: true });
+      };
+      upd();
+    },
     onSubmit: fd => {
-      const ops = [];
-      for (const p of prods) {
-        const v = fd['b_' + p.id];
-        if (v === undefined || String(v).trim() === '') continue;
-        const dif = num(v) - (sal[p.id] || 0);
-        if (Math.abs(dif) < 1e-9) continue;
-        ops.push(up('movimentos', { id: uid(), data: fd.data || hoje(), produtoId: p.id, tipo: dif > 0 ? 'entrada' : 'saida', quantidade: Math.abs(dif), custoUnit: num(p.custo), origem: 'balanco', origemId: '', obs: `Balanço: contado ${qtdFmt(v)}`, criadoEm: agora() }));
-      }
-      if (!ops.length) { toast('Nenhuma diferença encontrada'); return; }
-      Store.commit(ops);
-      toast(`Balanço aplicado: ${ops.length} ajuste(s)`, 'ok');
+      const ls = linhas(fd), grupo = 'bal-' + uid(), data = fd.data || hoje();
+      const ops = ls.filter(l => Math.abs(l.dif) > 1e-9).map(l => up('movimentos', { id: uid(), data, produtoId: l.id, tipo: l.dif > 0 ? 'entrada' : 'saida', quantidade: Math.abs(l.dif), custoUnit: l.custo, origem: 'balanco', origemId: grupo, obs: `Balanço: contado ${qtdFmt(l.contado)} (sistema ${qtdFmt(l.sistema)})`, criadoEm: agora() }));
+      if (!ls.length) { toast('Informe a contagem de pelo menos um produto', 'err'); return false; }
+      if (ops.length) Store.commit(ops);
+      toast(ops.length ? `Balanço aplicado: ${ops.length} ajuste(s)` : 'Nenhuma diferença encontrada — PDF gerado', 'ok');
+      gerarPdfBalanco({ data, linhas: ls });
     },
   });
+}
+function totaisBalanco(ls) {
+  const mais = ls.filter(l => l.dif > 1e-9), menos = ls.filter(l => l.dif < -1e-9);
+  const t = { qMais: mais.reduce((s, l) => s + l.dif, 0), vMais: r2(mais.reduce((s, l) => s + l.valor, 0)), qMenos: -menos.reduce((s, l) => s + l.dif, 0), vMenos: r2(-menos.reduce((s, l) => s + l.valor, 0)), nMais: mais.length, nMenos: menos.length };
+  t.liq = r2(t.vMais - t.vMenos);
+  return t;
+}
+/* Balanços já aplicados (agrupados), para gerar o PDF de novo */
+function balancosFeitos() {
+  const g = {};
+  for (const m of Store.data.movimentos.filter(x => x.origem === 'balanco')) {
+    const k = m.origemId || 'dia:' + m.data;
+    const p = produto(m.produtoId), dif = (m.tipo === 'saida' ? -1 : 1) * num(m.quantidade);
+    const mc = /contado\s+([\d.,-]+)/.exec(m.obs || ''), cont = mc ? num(mc[1]) : null;
+    (g[k] = g[k] || { id: k, data: m.data, criadoEm: m.criadoEm, linhas: [] }).linhas.push({ id: m.produtoId, nome: p ? p.nome : '(produto excluído)', sku: p?.sku || '', un: p?.unidade || 'un', sistema: cont == null ? null : cont - dif, contado: cont, dif, custo: num(m.custoUnit), valor: dif * num(m.custoUnit) });
+  }
+  return Object.values(g).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')));
+}
+const JSPDF_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+async function carregarJsPDF() {
+  if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+  await carregarScript(JSPDF_CDN).catch(() => { throw new Error('Não consegui carregar o gerador de PDF (verifique a internet)'); });
+  return window.jspdf.jsPDF;
+}
+async function logoDataURL() {
+  try {
+    const r = await fetch('logo.png'); const b = await r.blob();
+    return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(null); fr.readAsDataURL(b); });
+  } catch (e) { return null; }
+}
+async function gerarPdfBalanco({ data, linhas, previa }) {
+  let jsPDF;
+  try { jsPDF = await carregarJsPDF(); } catch (e) { toast(e.message, 'err'); return; }
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const W = 210, M = 12, t = totaisBalanco(linhas);
+  const R = v => 'R$ ' + num(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const Q = v => v == null ? '-' : qtdFmt(v);
+  const sinal = (v, f) => (v > 1e-9 ? '+' : v < -1e-9 ? '-' : '') + f(Math.abs(v));
+  const AZUL = [11, 58, 140], VERDE = [22, 128, 61], VERM = [200, 30, 30], CINZA = [105, 115, 138];
+  const logo = await logoDataURL();
+  let y = M;
+  if (logo) { try { doc.addImage(logo, 'PNG', M, y, 26, 21); } catch (e) {} }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.setTextColor(...AZUL);
+  doc.text('Balanço de estoque' + (previa ? ' (prévia)' : ''), logo ? M + 31 : M, y + 8);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...CINZA);
+  doc.text(`Cheel Out Shop · data da contagem ${dataBR(data)} · gerado em ${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}`, logo ? M + 31 : M, y + 14);
+  if (previa) doc.text('Prévia: o balanço ainda não foi aplicado ao estoque.', logo ? M + 31 : M, y + 19);
+  y += 27;
+  // resumo
+  const caixas = [
+    ['Produtos contados', String(linhas.length), `${t.nMais + t.nMenos} com diferença`, AZUL],
+    ['Sobras (a mais)', '+' + R(t.vMais), `${t.nMais} produto(s) · +${qtdFmt(t.qMais)} un`, VERDE],
+    ['Faltas (a menos)', '-' + R(t.vMenos), `${t.nMenos} produto(s) · -${qtdFmt(t.qMenos)} un`, VERM],
+    ['Resultado total', sinal(t.liq, R), 'sobras - faltas (a custo)', t.liq < 0 ? VERM : VERDE],
+  ];
+  const bw = (W - 2 * M - 9) / 4;
+  caixas.forEach(([l, v, h, cor], i) => {
+    const x = M + i * (bw + 3);
+    doc.setDrawColor(...cor); doc.setLineWidth(0.5); doc.roundedRect(x, y, bw, 22, 2, 2);
+    doc.setFontSize(8.5); doc.setTextColor(...CINZA); doc.setFont('helvetica', 'bold'); doc.text(l.toUpperCase(), x + 3, y + 5.5);
+    doc.setFontSize(13); doc.setTextColor(...cor); doc.text(v, x + 3, y + 13);
+    doc.setFontSize(7.5); doc.setFont('helvetica', 'normal'); doc.setTextColor(...CINZA); doc.text(h, x + 3, y + 18.5);
+  });
+  y += 30;
+  // tabela
+  const cols = [['Produto', 70, 'l'], ['SKU', 20, 'l'], ['Sistema', 18, 'r'], ['Contado', 18, 'r'], ['Diferença', 18, 'r'], ['Custo un.', 21, 'r'], ['Valor dif.', 21, 'r']];
+  const cab = () => {
+    doc.setFillColor(...AZUL); doc.rect(M, y, W - 2 * M, 7, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(255, 212, 0);
+    let x = M; cols.forEach(([n, w, a]) => { doc.text(n, a === 'r' ? x + w - 2 : x + 2, y + 4.8, { align: a === 'r' ? 'right' : 'left' }); x += w; });
+    y += 7;
+  };
+  const corta = (txt, w) => { let s = String(txt); while (s.length > 1 && doc.getTextWidth(s) > w - 4) s = s.slice(0, -1); return s.length < String(txt).length ? s.slice(0, -1) + '…' : s; };
+  const grupos = [['Sobras — contado acima do sistema', linhas.filter(l => l.dif > 1e-9)], ['Faltas — contado abaixo do sistema', linhas.filter(l => l.dif < -1e-9)], ['Sem diferença', linhas.filter(l => Math.abs(l.dif) <= 1e-9)]];
+  const novaPag = () => { doc.addPage(); y = M; cab(); };
+  cab();
+  let zebra = false;
+  for (const [titulo, ls] of grupos) {
+    if (!ls.length) continue;
+    if (y > 280) novaPag();
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...AZUL); doc.setFillColor(238, 242, 250); doc.rect(M, y, W - 2 * M, 6.5, 'F');
+    doc.text(`${titulo} (${ls.length})`, M + 2, y + 4.5); y += 6.5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    for (const l of ls.sort((a, b) => Math.abs(b.valor) - Math.abs(a.valor) || a.nome.localeCompare(b.nome))) {
+      if (y > 283) novaPag();
+      if (zebra) { doc.setFillColor(248, 249, 252); doc.rect(M, y, W - 2 * M, 6, 'F'); } zebra = !zebra;
+      const cor = l.dif > 1e-9 ? VERDE : l.dif < -1e-9 ? VERM : [40, 45, 60];
+      const vals = [corta(l.nome, 70), corta(l.sku, 20), Q(l.sistema), Q(l.contado), sinal(l.dif, qtdFmt), R(l.custo), sinal(l.valor, R)];
+      let x = M;
+      cols.forEach(([, w, a], i) => { doc.setTextColor(...(i >= 4 && i !== 5 ? cor : [40, 45, 60])); doc.text(vals[i], a === 'r' ? x + w - 2 : x + 2, y + 4.2, { align: a === 'r' ? 'right' : 'left' }); x += w; });
+      y += 6;
+    }
+  }
+  if (y > 262) novaPag();
+  y += 3; doc.setDrawColor(...AZUL); doc.setLineWidth(0.4); doc.line(M, y, W - M, y); y += 6;
+  const tot = [['Total a mais (sobras)', '+' + R(t.vMais), VERDE], ['Total a menos (faltas)', '-' + R(t.vMenos), VERM], ['RESULTADO DO BALANÇO', sinal(t.liq, R), t.liq < 0 ? VERM : VERDE]];
+  tot.forEach(([l, v, c], i) => { doc.setFont('helvetica', 'bold'); doc.setFontSize(i === 2 ? 11 : 9.5); doc.setTextColor(40, 45, 60); doc.text(l, W - M - 55, y, { align: 'right' }); doc.setTextColor(...c); doc.text(v, W - M - 2, y, { align: 'right' }); y += i === 1 ? 7 : 6; });
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...CINZA); doc.text(`Cheel Out Shop ERP · Balanço de ${dataBR(data)} · página ${i} de ${n}`, W / 2, 292, { align: 'center' }); }
+  doc.save(`balanco-estoque-${data}${previa ? '-previa' : ''}.pdf`);
+  toast('PDF do balanço gerado', 'ok');
 }
 
 /* =========================================================
@@ -875,6 +1126,7 @@ function viewPedidos(el, tipo) {
     if (fin.some(r => r.status === 'Pago')) return toast('Este pedido tem parcelas já baixadas. Estorne as baixas no financeiro antes de excluir.', 'err');
     confirmar(`Excluir ${V ? 'a venda' : 'o pedido de compra'} nº ${p.numero}? As movimentações de estoque e contas geradas por ele também serão removidas.`, () => {
       const ops = [del(tipo, p.id), ...Store.data.movimentos.filter(m => m.origemId === p.id).map(m => del('movimentos', m.id)), ...fin.map(r => del(V ? 'receber' : 'pagar', r.id))];
+      if (V) Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === p.id && r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id)));
       return Store.commit(ops).then(() => toast('Excluído', 'ok'));
     }, 'Excluir');
   });
@@ -1521,7 +1773,7 @@ function viewContas(tipo) {
   const el = $('#view');
   const R = tipo === 'receber';
   const k = R ? 'Rec' : 'Pag';
-  actions(`<button class="btn accent" id="novaConta">${ICON.plus}${R ? 'Nova conta a receber' : 'Nova conta a pagar'}</button>`);
+  actions((R ? `<button class="btn ghost" id="saqueTop">${ICON.down}Saque Jamble</button>` : '') + `<button class="btn accent" id="novaConta">${ICON.plus}${R ? 'Nova conta a receber' : 'Nova conta a pagar'}</button>`);
   const q = UI['q' + k] || '';
   const st = UI['st' + k] ?? 'abertas';
   const mes = UI['m' + k] ?? '';
@@ -1532,7 +1784,7 @@ function viewContas(tipo) {
     .sort((a, b) => (a.vencimento || '').localeCompare(b.vencimento || ''));
   const soma = f => lista.filter(f).reduce((s, c) => s + num(c.valor), 0);
   const tAb = soma(c => c.status !== 'Pago'), tPg = lista.filter(c => c.status === 'Pago').reduce((s, c) => s + num(c.valorPago || c.valor), 0), tVc = soma(c => statusConta(c) === 'Vencido');
-  el.innerHTML = `
+  el.innerHTML = (R ? barraJamble(false) : '') + `
     <div class="kpis">
       <div class="card kpi ${R ? 'green' : 'red'}"><div class="lbl">Em aberto (filtro)</div><div class="val">${brl(tAb)}</div></div>
       <div class="card kpi red"><div class="lbl">Vencido (filtro)</div><div class="val">${brl(tVc)}</div></div>
@@ -1568,16 +1820,107 @@ function viewContas(tipo) {
   $$('[data-st]', el).forEach(b => b.onclick = () => { UI['st' + k] = b.dataset.st; render(); });
   const find = id => Store.data[tipo].find(c => c.id === id);
   $('#novaConta').onclick = () => formConta(tipo);
+  if (R) { $('#saqueTop').onclick = formSaqueJamble; ligarBarraJamble(el); }
   $$('[data-edit]', el).forEach(b => b.onclick = () => formConta(tipo, find(b.dataset.edit)));
   $$('[data-baixa]', el).forEach(b => b.onclick = () => formBaixa(tipo, find(b.dataset.baixa)));
   $$('[data-estorno]', el).forEach(b => b.onclick = () => {
     const c = find(b.dataset.estorno);
-    confirmar(`Estornar a baixa de <b>${esc(c.descricao)}</b>? Ela volta para “em aberto”.`, () => Store.commit([up(tipo, { ...c, status: 'Aberto', pagoEm: '', valorPago: '' })]), 'Estornar');
+    confirmar(`Estornar a baixa de <b>${esc(c.descricao)}</b>? Ela volta para “em aberto”.`, () => Store.commit([up(tipo, { ...c, status: 'Aberto', pagoEm: '', valorPago: '', obs: String(c.obs || '').split(' · ').filter(t => !/^saque:/.test(t)).join(' · ') })]), 'Estornar');
   });
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const c = find(b.dataset.del);
     confirmar(`Excluir a conta <b>${esc(c.descricao)}</b> (${brl(c.valor)})?${c.origemId ? '<div class="note warn">Esta conta foi gerada por um pedido. Se o pedido for salvo novamente, ela pode ser recriada.</div>' : ''}`, () => Store.commit([del(tipo, c.id)]), 'Excluir');
   });
+}
+
+/* ---------------- Jamble: saldo a receber e saques ---------------- */
+const vendaDe = id => Store.data.vendas.find(v => v.id === id);
+function jambleInfo() {
+  const abertos = Store.data.receber.filter(r => r.status !== 'Pago' && r.origem === 'venda' && ehCanalJamble(vendaDe(r.origemId)?.canal))
+    .sort((a, b) => ((a.vencimento || '') + (a.criadoEm || '')).localeCompare((b.vencimento || '') + (b.criadoEm || '')));
+  const dataVenda = r => vendaDe(r.origemId)?.data || '';
+  const atrasados = abertos.filter(r => { const d = dataVenda(r) ? addDias(dataVenda(r), JAMBLE_DIAS) : r.vencimento; return d && d < hoje(); });
+  const pend = Store.data.vendas.filter(v => v.status === 'Pendente' && ehCanalJamble(v.canal));
+  const saques = Store.data.saques.filter(x => ehCanalJamble(x.plataforma)).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')));
+  const soma = l => r2(l.reduce((s, r) => s + num(r.valor), 0));
+  return { abertos, atrasados, pend, saques, saldo: soma(abertos), saldoAtrasado: soma(atrasados), pendBruto: r2(pend.reduce((s, v) => s + num(v.total) - num(v.comissao), 0)), dataVenda };
+}
+function formSaqueJamble() {
+  const J = jambleInfo();
+  if (!J.abertos.length) return toast('Não há valores da Jamble em aberto para sacar', 'err');
+  Modal.open({
+    title: 'Registrar saque da Jamble', small: true, submit: 'Registrar saque',
+    body: `<div class="saque-saldo"><span>Saldo da Jamble a receber</span><b>${brl(J.saldo)}</b><small>${J.abertos.length} lançamento(s) em aberto${J.atrasados.length ? ` · <span class="neg">${brl(J.saldoAtrasado)} com mais de ${JAMBLE_DIAS} dias</span>` : ''}</small></div>
+      ${J.pend.length ? `<div class="note warn">${J.pend.length} venda(s) da Jamble ainda <b>pendente(s) de confirmação</b> (${brl(J.pendBruto)} líquido) não entram no saldo. Confirme-as em Vendas para que entrem.</div>` : ''}
+      <div class="grid g2" style="margin-top:12px">
+        ${field('Data do saque', inp('data', hoje(), 'type="date" required'))}
+        ${field('Valor sacado (R$) *', inp('valor', '', 'inputmode="decimal" required placeholder="0,00" id="sqValor"'))}
+      </div>
+      ${field('Observação', inp('obs', '', 'placeholder="opcional"'))}
+      <div class="note" id="sqPrev" style="margin-top:12px"></div>`,
+    onOpen: body => {
+      const prev = () => { const v = r2($('#sqValor').value); $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo em aberto (${brl(J.saldo)}).</span>` : v > 0 ? `Saldo depois do saque: <b>${brl(J.saldo - v)}</b>. O valor dá baixa nas vendas mais antigas primeiro.` : 'Informe o valor que você transferiu da Jamble para a conta.'; };
+      $('#sqValor').addEventListener('input', prev); prev();
+    },
+    onSubmit: fd => {
+      const valor = r2(fd.valor);
+      if (valor <= 0) { toast('Informe o valor do saque', 'err'); return false; }
+      if (valor > J.saldo + 0.004) { toast(`O saque (${brl(valor)}) é maior que o saldo em aberto da Jamble (${brl(J.saldo)})`, 'err'); return false; }
+      const sq = { id: uid(), data: fd.data || hoje(), plataforma: 'Jamble', valor, obs: fd.obs || '', criadoEm: agora() };
+      const ops = [up('saques', sq)], marca = `saque:${sq.id}`;
+      let resto = valor;
+      for (const r of J.abertos) {
+        if (resto <= 0.004) break;
+        const v = num(r.valor);
+        if (v <= resto + 0.004) {
+          ops.push(up('receber', { ...r, status: 'Pago', pagoEm: sq.data, valorPago: v, obs: [r.obs, marca].filter(Boolean).join(' · ') }));
+          resto = r2(resto - v);
+        } else {
+          ops.push(up('receber', { ...r, valor: resto, status: 'Pago', pagoEm: sq.data, valorPago: resto, obs: [r.obs, marca].filter(Boolean).join(' · ') }));
+          ops.push(up('receber', { ...r, id: uid(), valor: r2(v - resto), descricao: String(r.descricao).replace(/ · saldo restante$/, '') + ' · saldo restante', criadoEm: agora() }));
+          resto = 0;
+        }
+      }
+      Store.commit(ops);
+      toast(`Saque de ${brl(valor)} registrado · saldo Jamble ${brl(J.saldo - valor)}`, 'ok');
+    },
+  });
+}
+function historicoSaques() {
+  const J = jambleInfo();
+  Modal.open({
+    title: 'Saques da Jamble',
+    body: J.saques.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table>
+      <thead><tr><th>Data</th><th class="r">Valor</th><th class="r">Vendas baixadas</th><th>Observação</th><th></th></tr></thead>
+      <tbody>${J.saques.map(x => `<tr><td>${dataBR(x.data)}</td><td class="r strong pos">${brl(x.valor)}</td><td class="r">${Store.data.receber.filter(r => String(r.obs || '').includes('saque:' + x.id)).length}</td><td class="muted wrap">${esc(x.obs)}</td>
+        <td class="act"><button type="button" class="btn ghost sm" data-desfaz="${esc(x.id)}">${ICON.undo}Desfazer</button></td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total sacado</td><td class="r">${brl(J.saques.reduce((s, x) => s + num(x.valor), 0))}</td><td colspan="3"></td></tr></tfoot></table></div>`
+      : '<div class="empty">Nenhum saque registrado ainda.</div>',
+    onOpen: body => $$('[data-desfaz]', body).forEach(b => b.onclick = () => {
+      const x = Store.data.saques.find(s => s.id === b.dataset.desfaz), marca = 'saque:' + x.id;
+      Modal.close();
+      setTimeout(() => confirmar(`Desfazer o saque de ${brl(x.valor)} de ${dataBR(x.data)}? As vendas voltam para “em aberto”.`, () => {
+        const ops = [del('saques', x.id)];
+        Store.data.receber.filter(r => String(r.obs || '').includes(marca)).forEach(r => ops.push(up('receber', { ...r, status: 'Aberto', pagoEm: '', valorPago: '', obs: String(r.obs).split(' · ').filter(t => t !== marca).join(' · ') })));
+        return Store.commit(ops).then(() => toast('Saque desfeito', 'ok'));
+      }, 'Desfazer'), 50);
+    }),
+  });
+}
+function barraJamble(compacto) {
+  const J = jambleInfo();
+  if (!J.abertos.length && !J.saques.length && !J.pend.length) return '';
+  const ult = J.saques[0];
+  return `<div class="jamble-bar ${J.atrasados.length ? 'alerta' : ''}">
+    <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>${J.abertos.length} venda(s) em aberto · repasse em ${JAMBLE_DIAS} dias${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
+    <div class="jb-alert">${J.atrasados.length ? `⚠ <b>${brl(J.saldoAtrasado)}</b> em ${J.atrasados.length} venda(s) com mais de ${JAMBLE_DIAS} dias sem receber` : `✓ nada passou de ${JAMBLE_DIAS} dias`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
+    <div class="jb-act"><button class="btn accent sm" data-saque>${ICON.down}Registrar saque</button>${compacto ? '' : `<button class="btn ghost sm" data-hist-saque>Histórico</button>`}${compacto && J.atrasados.length ? `<a class="btn ghost sm" href="#/receber" data-ver-atraso>Ver vendas</a>` : ''}</div>
+  </div>`;
+}
+function ligarBarraJamble(el) {
+  $$('[data-saque]', el).forEach(b => b.onclick = formSaqueJamble);
+  $$('[data-hist-saque]', el).forEach(b => b.onclick = historicoSaques);
+  $$('[data-ver-atraso]', el).forEach(b => b.onclick = () => { UI.stRec = 'abertas'; UI.qRec = 'Jamble'; });
 }
 
 function formConta(tipo, c) {
@@ -2010,7 +2353,7 @@ function abrirPDV(v) {
         itens: carrinho.map(i => ({ produtoId: i.produtoId, qtd: num(i.qtd), valor: r2(i.valor) })),
         frete: 0, desconto: r2(fd.desconto), total, formaPgto: forma,
         parcelas: forma === 'Cartão de crédito' ? Math.max(1, Math.floor(num(fd.parcelas)) || 1) : 1,
-        vencimento: forma === 'Cartão de crédito' || forma === 'Boleto' ? addDias(fd.data || hoje(), 30) : (fd.data || hoje()),
+        vencimento: ehCanalJamble(fd.canal) ? addDias(fd.data || hoje(), JAMBLE_DIAS) : forma === 'Cartão de crédito' || forma === 'Boleto' ? addDias(fd.data || hoje(), 30) : (fd.data || hoje()),
         obs: fd.obs || '', criadoEm: v.criadoEm || agora(),
         comissaoPct: pct, comissao: r2(total * pct / 100),
       };
@@ -2251,7 +2594,7 @@ function abrirImportarEtiquetas() {
         ${field('Data das vendas', '<input type="date" id="impData" value="' + hoje() + '">')}
         <label class="f">Plataforma<div class="num-fixo">Jamble<small>todas as vendas do PDF</small></div></label>
         ${field('Forma de recebimento', `<select id="impForma">${opt(FORMAS_VENDA, 'Transferência')}</select>`)}
-        ${field('Repasse previsto em (dias)', '<input type="number" id="impDias" min="0" value="7">')}
+        <label class="f">Repasse da Jamble<div class="num-fixo">${JAMBLE_DIAS} dias<small>prazo médio fixo</small></div></label>
       </div>
       <div id="impRes"></div>`,
     onOpen: body => {
@@ -2338,7 +2681,7 @@ function abrirImportarEtiquetas() {
       if (!sel.length) { toast(pedidos.length ? 'Selecione pelo menos uma venda' : 'Escolha o PDF das etiquetas', 'err'); return false; }
       const semCli = sel.find(p => !String(p.cliente || '').trim());
       if (semCli) { toast('Informe o nome do cliente de todas as vendas selecionadas', 'err'); return false; }
-      const data = $('#impData').value || hoje(), forma = $('#impForma').value, dias = Math.max(0, Math.floor(num($('#impDias').value)));
+      const data = $('#impData').value || hoje(), forma = $('#impForma').value, dias = JAMBLE_DIAS;
       const canal = 'Jamble';
       const ops = [];
       // plataforma Jamble garantida (taxa padrão 10%)
@@ -2663,6 +3006,54 @@ function formPlataforma(pl) {
   });
 }
 
+/* ---------------- Consignação ---------------- */
+const consignantes = () => Store.data.contatos.filter(c => c.consignante === 'sim').sort((a, b) => a.nome.localeCompare(b.nome));
+function formConsignante(c) {
+  const novo = !c;
+  const outros = Store.data.contatos.filter(x => x.consignante !== 'sim').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => [x.id, x.nome + (x.nick ? ' (@' + x.nick + ')' : '')]);
+  Modal.open({
+    title: novo ? 'Novo consignante' : 'Taxas de ' + c.nome, small: true, submit: 'Salvar taxas',
+    body: `<div class="grid">
+      ${novo ? field('Quem é o dono dos produtos?', `<select name="contatoId" id="csSel">${opt(outros, '', '➕ Cadastrar pessoa nova')}</select>`) + `<div id="csNovo">${field('Nome *', inp('nome', '', 'placeholder="Nome de quem deixou os produtos"'))}</div>` : ''}
+      <div class="grid g2">
+        ${field('Imposto (%)', inp('consigImposto', c && c.consigImposto !== '' ? fmtPct(num(c.consigImposto)) : '4', 'inputmode="decimal" required'))}
+        ${field('Comissão da loja (%)', inp('consigComissao', c && c.consigComissao !== '' ? fmtPct(num(c.consigComissao)) : '5', 'inputmode="decimal" required'))}
+      </div>
+      <p class="muted" style="margin:0;font-size:13px;font-weight:700">Repasse = valor vendido − taxa da plataforma (Jamble) − imposto − comissão. Ex.: R$ 100 − R$ 14 taxa Jamble − R$ 4 imposto − R$ 5 comissão = <b>R$ 77</b> para o dono. A taxa da Jamble usada é a real de cada venda (lida do PDF). As taxas valem para os produtos deste dono; no cadastro do produto dá para usar taxas diferentes.</p>
+    </div>`,
+    onOpen: body => { const s = $('#csSel', body); if (s) { const t = () => { $('#csNovo', body).hidden = !!s.value; }; s.onchange = t; t(); } },
+    onSubmit: fd => {
+      const taxas = { consignante: 'sim', consigImposto: num(fd.consigImposto), consigComissao: num(fd.consigComissao) };
+      let rec;
+      if (!novo) rec = { ...c, ...taxas };
+      else if (fd.contatoId) rec = { ...contato(fd.contatoId), ...taxas };
+      else {
+        const nome = String(fd.nome || '').trim(); if (!nome) { toast('Informe o nome do dono dos produtos', 'err'); return false; }
+        rec = { id: uid(), tipo: 'Fornecedor', nome, documento: '', telefone: '', email: '', cidade: '', uf: '', obs: 'Consignante (produtos em consignação)', criadoEm: agora(), fantasia: '', cep: '', endereco: '', nick: '', ...taxas };
+      }
+      Store.commit([up('contatos', rec)]); toast('Taxas salvas', 'ok');
+    },
+  });
+}
+function cardConsignacao() {
+  const cs = consignantes();
+  const rep = Store.data.pagar.filter(r => r.origem === 'consig');
+  return `
+    <div class="card" style="max-width:860px;margin-bottom:16px">
+      <h3 style="justify-content:space-between">Consignação — taxas por cliente <button class="btn ghost sm" id="novoConsig">${ICON.plus}Novo consignante</button></h3>
+      <p class="muted" style="margin:0 0 12px;font-weight:700;font-size:13.5px">Produtos de outras pessoas revendidos sem custo. Quando a venda é faturada, o sistema lança em <b>Contas a pagar</b> o repasse do dono: valor vendido − taxa da Jamble − imposto − comissão.</p>
+      <div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table>
+        <thead><tr><th>Dono</th><th class="r">Imposto</th><th class="r">Comissão</th><th class="r">Produtos</th><th class="r">A repassar</th><th class="r">Já repassado</th><th></th></tr></thead>
+        <tbody>${cs.length ? cs.map(c => { const r = rep.filter(x => x.contatoId === c.id); return `<tr>
+          <td class="strong">${esc(c.nome)}</td><td class="r">${fmtPct(num(c.consigImposto))}%</td><td class="r">${fmtPct(num(c.consigComissao))}%</td>
+          <td class="r">${Store.data.produtos.filter(p => p.consigId === c.id).length}</td>
+          <td class="r strong neg">${brl(r.filter(x => x.status !== 'Pago').reduce((s, x) => s + num(x.valor), 0))}</td>
+          <td class="r">${brl(r.filter(x => x.status === 'Pago').reduce((s, x) => s + num(x.valorPago || x.valor), 0))}</td>
+          <td class="act"><button class="icon-btn" data-consig="${esc(c.id)}" title="Editar taxas">${ICON.edit}</button></td></tr>`; }).join('') : `<tr><td colspan="7"><div class="empty" style="padding:18px">Nenhum consignante. Clique em “Novo consignante” e informe as taxas combinadas.</div></td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+}
+
 function viewConfig(el) {
   const snaps = snapshotsLocais();
   const total = Object.values(Store.data).reduce((s, l) => s + l.length, 0);
@@ -2679,6 +3070,7 @@ function viewConfig(el) {
           <td class="act"><button class="icon-btn" data-plat="${esc(pl.id)}" title="Editar">${ICON.edit}</button></td></tr>`; }).join('')}</tbody>
       </table></div>
     </div>
+    ${cardConsignacao()}
     <!--cfg-->`
   + `
     <div class="card" style="max-width:860px">
@@ -2696,6 +3088,8 @@ function viewConfig(el) {
         : `<div class="empty" style="padding:24px">${total ? 'A primeira cópia será feita no próximo login.' : 'Nenhum dado lançado ainda.'}</div>`}
     </div>`;
   $('#novaPlat', el).onclick = () => formPlataforma();
+  $('#novoConsig', el).onclick = () => formConsignante();
+  $$('[data-consig]', el).forEach(b => b.onclick = () => formConsignante(contato(b.dataset.consig)));
   $$('[data-plat]', el).forEach(b => b.onclick = () => formPlataforma(plataformas().find(p => p.id === b.dataset.plat)));
   $$('[data-snap]', el).forEach(b => b.onclick = () => { const s = snaps[+b.dataset.snap]; baixar(`cheeloutshop-backup-${s.dia}.json`, JSON.stringify(s.dados, null, 2), 'application/json'); });
   if (!Store.online) return;

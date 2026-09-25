@@ -99,6 +99,15 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - Pedido de compra: mostra o **último custo** de cada produto e se o custo do pedido está acima ou abaixo. O **frete é rateado** pelo valor de cada item e entra no custo do produto; não soma no total do pedido.
 - **Atualize o script da planilha e rode `setup`** (colunas `nick` em contatos e `apelidos` em produtos).
 
+## v18 — Jamble, fluxo de caixa, balanço em PDF e consignação
+
+- **Painel**: botão **📄 Importar etiquetas (PDF)**, faixa da **Jamble a receber** com alerta do que passou de 20 dias, e **Fluxo de caixa** do mês (entrou, saiu, resultado) com a posição da loja hoje (caixa + a receber − a pagar + estoque).
+- **Jamble**: prazo de repasse fixo em **20 dias** (importação e frente de caixa). O valor a receber é sempre o líquido (depois da taxa).
+- **Contas a receber › Saque Jamble**: informe data e valor sacado; o valor dá baixa nas vendas mais antigas primeiro (a última pode ficar parcial) e o saldo se atualiza. Tem histórico e opção de desfazer.
+- **Balanço / inventário**: mostra sobras e faltas enquanto você digita, e gera **PDF** com quantidades a mais/a menos e os valores totais. Os balanços antigos ficam em Controle de estoque › Balanços, com o PDF para baixar de novo.
+- **Consignação**: em Configurações, cadastre o dono dos produtos com o **imposto %** e a **comissão %** combinados. No produto, escolha o dono (custo zero) e, se quiser, taxas diferentes. Ao faturar a venda, entra em Contas a pagar o **repasse** = valor vendido − taxa da Jamble − imposto − comissão.
+- **Atualize o script da planilha** (cole o novo `Code.gs` e publique uma **nova versão**). As abas/colunas novas (`saques`, consignação) são criadas sozinhas no primeiro acesso.
+
 ## Como os dados se ligam
 
 ```
