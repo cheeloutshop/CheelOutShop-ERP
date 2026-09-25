@@ -17,6 +17,11 @@ const COLS = {
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
+const LS_SESSION = 'cheel_erp_session_v1';
+const LS_USERS = 'cheel_erp_users_v1';
+const LS_MIGRAR = 'cheel_erp_migrar_v1';
+const ERP = window.ERP_CONFIG || {};
+const EMAIL_PADRAO = String(ERP.email || 'cheeloutshop@gmail.com').trim().toLowerCase();
 
 const CANAIS = ['Loja física', 'Site', 'Mercado Livre', 'Shopee', 'Amazon', 'TikTok Shop', 'Instagram / WhatsApp', 'Outro'];
 const FORMAS = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência', 'Marketplace'];
@@ -83,25 +88,28 @@ function toast(msg, tipo = '') {
 /* ---------------- Store ---------------- */
 const Store = {
   data: Object.fromEntries(Object.keys(COLS).map(k => [k, []])),
-  cfg: { url: '', key: '' },
+  cfg: { url: '' },
   queue: [],
 
   init() {
-    try { this.cfg = { ...this.cfg, ...JSON.parse(localStorage.getItem(LS_CFG) || '{}') }; } catch (e) {}
+    let salvo = {};
+    try { salvo = JSON.parse(localStorage.getItem(LS_CFG) || '{}') || {}; } catch (e) {}
+    // URL definida em Configurações tem prioridade; senão usa a do config.js
+    this.cfg.url = ('url' in salvo && salvo.origem === 'manual') ? String(salvo.url || '') : String(ERP.apiUrl || '').trim();
     try {
       const d = JSON.parse(localStorage.getItem(LS_DATA) || 'null');
       if (d) for (const k of Object.keys(COLS)) this.data[k] = (d[k] || []).map(r => this.normalize(k, r));
     } catch (e) {}
     try { this.queue = JSON.parse(localStorage.getItem(LS_QUEUE) || '[]'); } catch (e) { this.queue = []; }
   },
-  get online() { return !!(this.cfg.url && this.cfg.key); },
+  get online() { return !!this.cfg.url; },
   normalize(sheet, r) {
     const o = { ...r };
     if ('itens' in o && typeof o.itens === 'string') { try { o.itens = JSON.parse(o.itens || '[]'); } catch (e) { o.itens = []; } }
     if (COLS[sheet].includes('itens') && !Array.isArray(o.itens)) o.itens = [];
     return o;
   },
-  saveCfg() { try { localStorage.setItem(LS_CFG, JSON.stringify(this.cfg)); } catch (e) {} },
+  saveCfg() { try { localStorage.setItem(LS_CFG, JSON.stringify({ url: this.cfg.url, origem: 'manual' })); } catch (e) {} },
   saveCache() {
     try {
       localStorage.setItem(LS_DATA, JSON.stringify(this.data));
@@ -109,10 +117,16 @@ const Store = {
     } catch (e) {}
   },
   async api(payload) {
-    const res = await fetch(this.cfg.url, { method: 'POST', body: JSON.stringify({ ...payload, key: this.cfg.key }) });
+    let res;
+    try { res = await fetch(this.cfg.url, { method: 'POST', body: JSON.stringify({ ...payload, token: Auth.token }) }); }
+    catch (e) { throw new Error('Sem conexão com a planilha. Verifique a internet e a URL do Apps Script.'); }
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const j = await res.json();
-    if (!j.ok) throw new Error(j.error || 'Erro desconhecido');
+    let j;
+    try { j = await res.json(); } catch (e) { throw new Error('Resposta inválida. Confira se a URL termina em /exec e se o acesso está como "Qualquer pessoa".'); }
+    if (!j.ok) {
+      if (j.error === 'SESSAO_EXPIRADA') { Auth.expirou(); throw new Error('Sua sessão expirou. Entre novamente.'); }
+      throw new Error(j.error || 'Erro desconhecido');
+    }
     return j.data;
   },
   apply(ops) {
@@ -140,7 +154,7 @@ const Store = {
       return true;
     } catch (e) {
       setSync('erro', e.message);
-      toast('Não consegui salvar na planilha: ' + e.message + '. As alterações ficam guardadas e serão reenviadas.', 'err');
+      if (Auth.sess) toast('Não consegui salvar na planilha: ' + e.message + ' As alterações ficam guardadas e serão reenviadas.', 'err');
       return false;
     }
   },
@@ -164,7 +178,7 @@ const Store = {
       setSync('ok');
     } catch (e) {
       setSync('erro', e.message);
-      toast('Erro ao carregar da planilha: ' + e.message, 'err');
+      if (Auth.sess) toast('Erro ao carregar da planilha: ' + e.message, 'err');
     }
   },
 };
@@ -1045,26 +1059,26 @@ function viewConfig(el) {
         <h3>Conexão com o Google Sheets</h3>
         <div class="grid">
           ${field('URL do App da Web (Apps Script)', `<input id="cfgUrl" value="${esc(cfg.url)}" placeholder="https://script.google.com/macros/s/…/exec">`)}
-          ${field('Senha da API (a mesma do API_KEY no Apps Script)', `<input id="cfgKey" type="password" value="${esc(cfg.key)}">`)}
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn primary" id="cfgSalvar">Salvar e conectar</button>
-            <button class="btn ghost" id="cfgTestar">Testar conexão</button>
-            ${cfg.url ? '<button class="btn danger" id="cfgDesc">Desconectar</button>' : ''}
+            <button class="btn primary" id="cfgSalvar">Salvar conexão</button>
+            <button class="btn ghost" id="cfgTestar">Testar</button>
+            ${cfg.url ? '<button class="btn danger" id="cfgDesc">Usar modo local</button>' : ''}
           </div>
-          <div class="note">${Store.online ? `Conectado. Os dados são lidos e gravados na planilha. ${Store.queue.length ? `<b>${Store.queue.length} alteração(ões) aguardando envio.</b>` : ''}` : 'Sem planilha conectada: os dados ficam salvos apenas neste navegador.'}</div>
+          <div class="note">${Store.online ? `Conectado. Os dados são lidos e gravados na planilha. ${Store.queue.length ? `<b>${Store.queue.length} alteração(ões) aguardando envio.</b>` : ''}` : 'Modo local: os dados ficam salvos apenas neste navegador. Para usar a planilha, cole a URL do Apps Script acima (ou no arquivo <code class="code">config.js</code>).'}</div>
           ${Store.online ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" id="cfgRecarregar">${ICON.sync}Recarregar da planilha</button><button class="btn ghost" id="cfgEnviar">Enviar dados deste navegador para a planilha</button></div>` : ''}
         </div>
       </div>
       <div class="card">
-        <h3>Como conectar (uma vez só)</h3>
-        <ol class="steps">
-          <li>Crie uma planilha nova no Google Sheets.</li>
-          <li>Menu <b>Extensões › Apps Script</b>, apague tudo e cole o conteúdo de <code>apps-script/Code.gs</code>.</li>
-          <li>Troque a senha em <code>API_KEY</code> e salve.</li>
-          <li>Selecione a função <code>setup</code> e clique em <b>Executar</b> (autorize).</li>
-          <li><b>Implantar › Nova implantação › App da Web</b> — Executar como: <b>Eu</b>; Acesso: <b>Qualquer pessoa</b>.</li>
-          <li>Copie a URL que termina em <code>/exec</code> e cole ao lado com a senha.</li>
-        </ol>
+        <h3>Acesso</h3>
+        <div class="email-fixed" style="margin-bottom:14px"><span class="avatar">${esc((Auth.sess?.email || 'c')[0].toUpperCase())}</span>${esc(Auth.sess?.email || '')}</div>
+        <form id="trocaSenha" class="grid" autocomplete="off">
+          <div class="grid g2">
+            ${field('Senha atual', '<input type="password" name="atual" required autocomplete="current-password">', 'span2')}
+            ${field('Nova senha', '<input type="password" name="nova" required minlength="8" autocomplete="new-password">')}
+            ${field('Confirmar nova senha', '<input type="password" name="conf" required autocomplete="new-password">')}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" type="submit">Trocar senha</button><button class="btn ghost" type="button" id="cfgSair">Sair do sistema</button></div>
+        </form>
       </div>
     </div>
     <div class="two even">
@@ -1085,26 +1099,31 @@ function viewConfig(el) {
       </div>
     </div>`;
 
-  const lerCampos = () => ({ url: $('#cfgUrl').value.trim(), key: $('#cfgKey').value.trim() });
+  const urlCampo = () => $('#cfgUrl').value.trim();
   $('#cfgTestar').onclick = async () => {
-    const tmp = Store.cfg; Store.cfg = lerCampos();
-    try { const r = await Store.api({ action: 'ping' }); toast('Conexão OK com a planilha “' + r.planilha + '”', 'ok'); }
+    const tmp = Store.cfg.url; Store.cfg.url = urlCampo();
+    try { if (!Store.cfg.url) throw new Error('Informe a URL'); await Store.api({ action: 'ping' }); toast('Conexão OK com o Apps Script', 'ok'); }
     catch (e) { toast('Falhou: ' + e.message, 'err'); }
-    Store.cfg = tmp;
+    Store.cfg.url = tmp;
   };
   $('#cfgSalvar').onclick = async () => {
-    const c = lerCampos();
-    if (!c.url || !c.key) return toast('Informe a URL e a senha', 'err');
-    const tmp = Store.cfg; Store.cfg = c;
-    try { await Store.api({ action: 'ping' }); } catch (e) { Store.cfg = tmp; return toast('Não conectou: ' + e.message, 'err'); }
-    const tinhaLocal = !tmp.url && Object.values(Store.data).some(l => l.length);
-    Store.saveCfg();
-    if (tinhaLocal) {
-      confirmar('Conectado! Você tem dados salvos neste navegador. Deseja <b>enviá-los para a planilha</b>? (Se escolher Cancelar, os dados da planilha serão carregados e os locais substituídos.)', async () => { await enviarTudo(); await Store.load(); render(); }, 'Enviar para a planilha');
-      $$('[data-close]').forEach(b => b.addEventListener('click', async () => { await Store.load(); render(); }, { once: true }));
-    } else { await Store.load(); render(); toast('Conectado à planilha', 'ok'); }
+    const url = urlCampo();
+    if (!url) return toast('Informe a URL', 'err');
+    const tmp = Store.cfg.url; Store.cfg.url = url;
+    try { await Store.api({ action: 'ping' }); } catch (e) { Store.cfg.url = tmp; return toast('Não conectou: ' + e.message, 'err'); }
+    Store.cfg.url = tmp;
+    trocarConexao(url);
   };
-  $('#cfgDesc') && ($('#cfgDesc').onclick = () => confirmar('Desconectar da planilha? Uma cópia dos dados continua neste navegador.', () => { Store.cfg = { url: '', key: '' }; Store.queue = []; Store.saveCfg(); Store.saveCache(); setSync('local'); render(); }, 'Desconectar'));
+  $('#cfgDesc') && ($('#cfgDesc').onclick = () => confirmar('Passar a usar o modo local (dados só neste navegador)? Os dados da planilha continuam guardados nela.', () => trocarConexao(''), 'Usar modo local'));
+  $('#cfgSair').onclick = () => Auth.logout();
+  $('#trocaSenha').onsubmit = async e => {
+    e.preventDefault();
+    const fd = Object.fromEntries(new FormData(e.target).entries());
+    if (fd.nova.length < 8) return toast('A nova senha precisa ter pelo menos 8 caracteres', 'err');
+    if (fd.nova !== fd.conf) return toast('As senhas novas não conferem', 'err');
+    try { await Auth.trocarSenha(fd.atual, fd.nova); e.target.reset(); toast('Senha alterada', 'ok'); }
+    catch (err) { toast(err.message, 'err'); }
+  };
   $('#cfgRecarregar') && ($('#cfgRecarregar').onclick = async () => { await Store.load(); render(); toast('Dados recarregados', 'ok'); });
   $('#cfgEnviar') && ($('#cfgEnviar').onclick = () => confirmar('Enviar todos os registros deste navegador para a planilha? Registros com o mesmo ID serão sobrescritos.', async () => { await enviarTudo(); toast('Dados enviados', 'ok'); render(); }, 'Enviar'));
 
@@ -1193,9 +1212,302 @@ function dadosDemo() {
   return ops; // commit reaplica (upsert é idempotente) e envia para a planilha
 }
 
+/* =========================================================
+   LOGIN / ACESSO
+   ========================================================= */
+const b64e = u8 => btoa(String.fromCharCode(...u8));
+const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+async function pbkdf2(senha, saltB64) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(senha), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: b64d(saltB64), iterations: 150000 }, key, 256);
+  return b64e(new Uint8Array(bits));
+}
+const normEmail = e => String(e || '').trim().toLowerCase();
+
+const Auth = {
+  sess: null,
+  get token() { return this.sess?.token || ''; },
+  get modo() { return Store.online ? 'online' : 'local'; },
+
+  init() {
+    try { this.sess = JSON.parse(localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || 'null'); } catch (e) { this.sess = null; }
+    if (this.sess && (Date.now() > num(this.sess.exp) || this.sess.modo !== this.modo || (this.sess.modo === 'online' && this.sess.url !== Store.cfg.url))) this.limpar();
+    $('#ano').textContent = new Date().getFullYear();
+    if (this.sess) this.entrar(); else this.mostrarLogin('login');
+  },
+  salvar(s, lembrar) {
+    this.sess = { ...s, email: normEmail(s.email), modo: this.modo, url: Store.cfg.url };
+    try {
+      localStorage.removeItem(LS_SESSION); sessionStorage.removeItem(LS_SESSION);
+      (lembrar ? localStorage : sessionStorage).setItem(LS_SESSION, JSON.stringify(this.sess));
+    } catch (e) {}
+  },
+  limpar() {
+    this.sess = null;
+    try { localStorage.removeItem(LS_SESSION); sessionStorage.removeItem(LS_SESSION); } catch (e) {}
+  },
+
+  /* ---- usuários do modo local ---- */
+  locais() { try { return JSON.parse(localStorage.getItem(LS_USERS) || '{}'); } catch (e) { return {}; } },
+  gravarLocal(email, reg) { const u = this.locais(); if (reg) u[email] = reg; else delete u[email]; localStorage.setItem(LS_USERS, JSON.stringify(u)); },
+  checarEmail(email) { if (normEmail(email) !== EMAIL_PADRAO) throw new Error('E-mail não autorizado a acessar este sistema.'); },
+  checarSenha(s) { if (String(s).length < 8) throw new Error('A senha precisa ter pelo menos 8 caracteres.'); },
+  expLocal(lembrar) { return Date.now() + (lembrar ? 30 * 864e5 : 12 * 36e5); },
+
+  async login(email, senha, lembrar) {
+    email = normEmail(email);
+    if (Store.online) {
+      const r = await Store.api({ action: 'login', email, senha, lembrar });
+      this.salvar(r, lembrar);
+    } else {
+      this.checarEmail(email);
+      const u = this.locais()[email];
+      if (!u) throw new Error('Este e-mail ainda não tem acesso. Clique em "Criar novo acesso".');
+      if (await pbkdf2(senha, u.salt) !== u.hash) throw new Error('E-mail ou senha incorretos.');
+      this.salvar({ email, exp: this.expLocal(lembrar) }, lembrar);
+    }
+  },
+  async registrar(email, senha, lembrar) {
+    email = normEmail(email);
+    this.checarSenha(senha);
+    if (Store.online) {
+      const r = await Store.api({ action: 'register', email, senha, lembrar });
+      this.salvar(r, lembrar);
+    } else {
+      this.checarEmail(email);
+      if (this.locais()[email]) throw new Error('Este e-mail já tem acesso cadastrado. Use "Entrar" ou "Esqueci minha senha".');
+      const salt = b64e(crypto.getRandomValues(new Uint8Array(16)));
+      this.gravarLocal(email, { salt, hash: await pbkdf2(senha, salt), criadoEm: agora() });
+      this.salvar({ email, exp: this.expLocal(lembrar) }, lembrar);
+    }
+  },
+  async trocarSenha(atual, nova) {
+    this.checarSenha(nova);
+    if (Store.online) return Store.api({ action: 'changePassword', atual, nova });
+    const email = this.sess.email, u = this.locais()[email];
+    if (!u || await pbkdf2(atual, u.salt) !== u.hash) throw new Error('Senha atual incorreta.');
+    const salt = b64e(crypto.getRandomValues(new Uint8Array(16)));
+    this.gravarLocal(email, { ...u, salt, hash: await pbkdf2(nova, salt) });
+  },
+
+  entrar() {
+    document.body.classList.remove('locked');
+    $('#userMail').textContent = this.sess.email;
+    $('.user-chip .avatar').textContent = this.sess.email[0].toUpperCase();
+    setSync(Store.online ? 'sync' : 'local');
+    render();
+    Store.load().then(async () => {
+      render();
+      await migrarLocal();
+    });
+  },
+  async logout() {
+    if (Store.online && Store.queue.length) {
+      const ok = await Store.flush();
+      if (!ok && !window.confirm('Há alterações que ainda não foram enviadas para a planilha. Elas ficam guardadas neste navegador e serão enviadas no próximo login. Sair mesmo assim?')) return;
+    }
+    if (Store.online) {
+      Store.api({ action: 'logout' }).catch(() => {});
+      // não deixa cópia dos dados no computador depois de sair (exceto pendências)
+      if (!Store.queue.length) { for (const k of Object.keys(COLS)) Store.data[k] = []; Store.saveCache(); }
+    }
+    this.limpar();
+    this.mostrarLogin('login');
+  },
+  expirou() {
+    if (!this.sess) return;
+    this.limpar();
+    this.mostrarLogin('login', 'Sua sessão expirou. Entre novamente.');
+  },
+
+  /* ---- telas ---- */
+  mostrarLogin(tela, aviso) {
+    $('#modal').open && Modal.close();
+    document.body.classList.add('locked');
+    document.body.classList.remove('menu-open');
+    renderAuth(tela, aviso);
+  },
+};
+
+const EYE = '<svg viewBox="0 0 24 24"><path d="M12 5C7 5 2.7 8.1 1 12.5 2.7 16.9 7 20 12 20s9.3-3.1 11-7.5C21.3 8.1 17 5 12 5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
+const pwdInput = (name, ph, ac, id = '') => `<div class="pwd"><input type="password" name="${name}" ${id ? `id="${id}"` : ''} placeholder="${ph}" autocomplete="${ac}" required><button type="button" class="icon-btn eye" data-eye tabindex="-1" aria-label="Mostrar senha">${EYE}</button></div>`;
+const emailBox = () => `<div class="email-fixed"><span class="avatar">${esc(EMAIL_PADRAO[0].toUpperCase())}</span><span>${esc(EMAIL_PADRAO)}</span></div><input type="hidden" name="email" value="${esc(EMAIL_PADRAO)}">`;
+
+function forcaSenha(s) {
+  let p = 0;
+  if (s.length >= 8) p++;
+  if (s.length >= 12) p++;
+  if (/[a-z]/.test(s) && /[A-Z]/.test(s)) p++;
+  if (/\d/.test(s)) p++;
+  if (/[^A-Za-z0-9]/.test(s)) p++;
+  return Math.min(4, p);
+}
+
+function renderAuth(tela, aviso = '', extra = {}) {
+  const card = $('#authCard');
+  const online = Store.online;
+  let html = '';
+  if (tela === 'login') {
+    html = `<h2>Entrar</h2><p class="lead">Acesse o painel de gestão da Cheel Out Shop.</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="${extra.ok ? 'auth-ok' : 'auth-err'}">${esc(aviso)}</div>` : ''}
+        <label class="f">E-mail<input type="email" name="email" value="${esc(extra.email || EMAIL_PADRAO)}" autocomplete="username" required></label>
+        <label class="f">Senha${pwdInput('senha', 'Sua senha', 'current-password')}</label>
+        <div class="row-between"><label class="check"><input type="checkbox" name="lembrar" checked>Manter conectado</label><button type="button" class="link" data-go="esqueci">Esqueci minha senha</button></div>
+        <button class="btn primary block" type="submit">Entrar</button>
+        <div class="divider">primeiro acesso?</div>
+        <button type="button" class="btn ghost block" data-go="novo">Criar novo acesso</button>
+      </form>`;
+  } else if (tela === 'novo') {
+    html = `<h2>Novo acesso</h2><p class="lead">Crie a senha para entrar no sistema.</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="auth-err">${esc(aviso)}</div>` : ''}
+        <label class="f">E-mail de acesso${emailBox()}</label>
+        <label class="f">Crie uma senha${pwdInput('senha', 'Mínimo de 8 caracteres', 'new-password', 'nSenha')}<div class="strength"><i id="forca"></i></div><span class="hint-s" id="forcaTxt">Use letras maiúsculas, minúsculas, números e símbolos.</span></label>
+        <label class="f">Confirme a senha${pwdInput('conf', 'Repita a senha', 'new-password')}</label>
+        <label class="check"><input type="checkbox" name="lembrar" checked>Manter conectado</label>
+        <button class="btn accent block" type="submit">Criar acesso e entrar</button>
+        <button type="button" class="link" data-go="login" style="justify-self:center">← Voltar para o login</button>
+      </form>`;
+  } else if (tela === 'esqueci') {
+    html = online ? `<h2>Esqueci minha senha</h2><p class="lead">Vamos enviar um código de 6 dígitos para o e-mail de acesso.</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="auth-err">${esc(aviso)}</div>` : ''}
+        <label class="f">E-mail${emailBox()}</label>
+        <button class="btn primary block" type="submit">Enviar código</button>
+        <button type="button" class="link" data-go="codigo" style="justify-self:center">Já tenho um código</button>
+        <button type="button" class="link" data-go="login" style="justify-self:center">← Voltar para o login</button>
+      </form>`
+      : `<h2>Esqueci minha senha</h2><p class="lead">No modo local a senha fica guardada só neste navegador e não dá para enviar código por e-mail.</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="auth-err">${esc(aviso)}</div>` : ''}
+        <div class="note warn" style="margin:0">Você pode redefinir o acesso deste navegador. Os dados do ERP <b>não</b> são apagados, e você cria uma senha nova em seguida.</div>
+        <button class="btn primary block" type="submit">Redefinir acesso neste navegador</button>
+        <button type="button" class="link" data-go="login" style="justify-self:center">← Voltar para o login</button>
+      </form>`;
+  } else if (tela === 'codigo') {
+    html = `<h2>Nova senha</h2><p class="lead">Digite o código enviado para <b>${esc(EMAIL_PADRAO)}</b> e escolha a nova senha.</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="${extra.ok ? 'auth-ok' : 'auth-err'}">${esc(aviso)}</div>` : ''}
+        <input type="hidden" name="email" value="${esc(EMAIL_PADRAO)}">
+        <label class="f">Código de 6 dígitos<input name="codigo" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required style="letter-spacing:.4em;font-weight:900;font-size:20px"></label>
+        <label class="f">Nova senha${pwdInput('senha', 'Mínimo de 8 caracteres', 'new-password', 'nSenha')}<div class="strength"><i id="forca"></i></div><span class="hint-s" id="forcaTxt"></span></label>
+        <label class="f">Confirme a nova senha${pwdInput('conf', 'Repita a senha', 'new-password')}</label>
+        <button class="btn primary block" type="submit">Salvar nova senha e entrar</button>
+        <button type="button" class="link" data-go="login" style="justify-self:center">← Voltar para o login</button>
+      </form>`;
+  } else if (tela === 'conexao') {
+    html = `<h2>Conexão</h2><p class="lead">Cole a URL do App da Web do Apps Script (termina em <code class="code">/exec</code>).</p>
+      <form id="fAuth" novalidate>
+        ${aviso ? `<div class="auth-err">${esc(aviso)}</div>` : ''}
+        <label class="f">URL do Apps Script<input name="url" value="${esc(Store.cfg.url)}" placeholder="https://script.google.com/macros/s/…/exec"></label>
+        <button class="btn primary block" type="submit">Salvar e conectar</button>
+        ${Store.cfg.url ? '<button type="button" class="btn ghost block" id="usarLocal">Usar modo local (sem planilha)</button>' : ''}
+        <button type="button" class="link" data-go="login" style="justify-self:center">← Voltar para o login</button>
+      </form>`;
+  }
+  card.innerHTML = html;
+  $('#authMode').innerHTML = online
+    ? `<span class="dot on"></span>Conectado à planilha do Google · <button class="link" data-go="conexao" style="font-size:13px">alterar</button>`
+    : `<span class="dot"></span>Modo local (dados neste navegador) · <button class="link" data-go="conexao" style="font-size:13px">conectar planilha</button>`;
+
+  $$('[data-go]').forEach(b => b.onclick = () => renderAuth(b.dataset.go));
+  $$('[data-eye]', card).forEach(b => b.onclick = () => { const i = b.previousElementSibling; i.type = i.type === 'password' ? 'text' : 'password'; });
+  const ns = $('#nSenha');
+  if (ns) ns.oninput = () => {
+    const f = forcaSenha(ns.value);
+    const cores = ['#D23B3B', '#D23B3B', '#F28C00', '#2A6BE0', '#12925A'];
+    $('#forca').style.width = (ns.value ? (f + 1) * 20 : 0) + '%';
+    $('#forca').style.background = cores[f];
+    $('#forcaTxt').textContent = !ns.value ? 'Use letras maiúsculas, minúsculas, números e símbolos.' : ['Muito fraca', 'Fraca', 'Razoável', 'Boa', 'Forte'][f];
+  };
+  $('#usarLocal') && ($('#usarLocal').onclick = () => trocarConexao(''));
+  const first = $('input:not([type=hidden]):not([type=checkbox])', card);
+  if (first && !first.value) first.focus(); else { const s = $('input[type=password]', card); s && s.focus(); }
+
+  $('#fAuth').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    const fd = Object.fromEntries(new FormData(f).entries());
+    const lembrar = !!fd.lembrar;
+    const btn = $('button[type=submit]', f);
+    const txt = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Aguarde…';
+    try {
+      if (tela === 'login') {
+        if (!fd.email || !fd.senha) throw new Error('Informe e-mail e senha.');
+        await Auth.login(fd.email, fd.senha, lembrar);
+        Auth.entrar();
+      } else if (tela === 'novo' || tela === 'codigo') {
+        if (tela === 'codigo' && !/^\d{6}$/.test(String(fd.codigo).trim())) throw new Error('Digite o código de 6 dígitos.');
+        Auth.checarSenha(fd.senha);
+        if (fd.senha !== fd.conf) throw new Error('As senhas não conferem.');
+        if (tela === 'novo') await Auth.registrar(fd.email, fd.senha, lembrar);
+        else { const r = await Store.api({ action: 'reset', email: fd.email, codigo: fd.codigo, senha: fd.senha }); Auth.salvar(r, false); }
+        Auth.entrar();
+        toast(tela === 'novo' ? 'Acesso criado. Bem-vindo!' : 'Senha alterada', 'ok');
+      } else if (tela === 'esqueci') {
+        if (Store.online) {
+          await Store.api({ action: 'forgot', email: EMAIL_PADRAO });
+          renderAuth('codigo', 'Código enviado! Confira a caixa de entrada (e o spam) de ' + EMAIL_PADRAO + '.', { ok: true });
+        } else {
+          if (!window.confirm('Redefinir o acesso deste navegador? Você vai criar uma senha nova.')) throw new Error('');
+          Auth.gravarLocal(EMAIL_PADRAO, null);
+          renderAuth('novo');
+        }
+      } else if (tela === 'conexao') {
+        const url = String(fd.url || '').trim();
+        if (!url) throw new Error('Cole a URL do Apps Script.');
+        if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) throw new Error('A URL deve começar com https://script.google.com/');
+        const tmp = Store.cfg.url; Store.cfg.url = url;
+        try { await Store.api({ action: 'ping' }); } finally { Store.cfg.url = tmp; }
+        trocarConexao(url);
+      }
+    } catch (err) {
+      if (err.message && $('#authCard form') === f) {
+        let box = $('.auth-err, .auth-ok', f);
+        if (!box) { box = document.createElement('div'); f.prepend(box); }
+        box.className = 'auth-err'; box.textContent = err.message;
+      }
+      if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = txt; }
+    }
+  };
+}
+
+/* Troca a planilha (ou volta para o modo local). Exige novo login. */
+function trocarConexao(url) {
+  const tinhaLocal = !Store.online && url && Object.values(Store.data).some(l => l.length);
+  if (tinhaLocal) { try { localStorage.setItem(LS_MIGRAR, JSON.stringify(Store.data)); } catch (e) {} }
+  if (Store.online && Auth.sess) Store.api({ action: 'logout' }).catch(() => {});
+  Store.cfg.url = url;
+  Store.queue = [];
+  Store.saveCfg();
+  Store.saveCache();
+  Auth.limpar();
+  Auth.mostrarLogin('login', url ? 'Planilha conectada. Entre (ou crie o acesso) para continuar.' : 'Modo local ativado.', { ok: true });
+}
+
+/* Depois do primeiro login na planilha, oferece enviar os dados que estavam no modo local */
+async function migrarLocal() {
+  if (!Store.online) return;
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(LS_MIGRAR) || 'null'); } catch (e) {}
+  if (!d) return;
+  const total = Object.values(d).reduce((s, l) => s + (l?.length || 0), 0);
+  const limpar = () => { try { localStorage.removeItem(LS_MIGRAR); } catch (e) {} };
+  if (!total) return limpar();
+  confirmar(`Encontramos <b>${total} registro(s)</b> que estavam salvos no modo local deste navegador. Deseja enviá-los para a planilha?`, async () => {
+    const ops = [];
+    for (const k of Object.keys(COLS)) (d[k] || []).forEach(r => r.id && ops.push(up(k, Store.normalize(k, r))));
+    limpar();
+    await Store.commit(ops);
+    toast('Dados enviados para a planilha', 'ok');
+  }, 'Enviar para a planilha');
+  $$('[data-close]').forEach(b => b.addEventListener('click', limpar, { once: true }));
+}
+
 /* ---------------- Início ---------------- */
 Store.init();
-setSync(Store.online ? 'sync' : 'local');
-render();
-Store.load().then(render);
-window.addEventListener('online', () => Store.flush());
+Auth.init();
+window.addEventListener('online', () => Auth.sess && Store.flush());
+$('#logoutBtn').onclick = () => Auth.logout();
