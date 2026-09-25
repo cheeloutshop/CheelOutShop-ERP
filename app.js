@@ -1363,8 +1363,10 @@ function animarEntrada(depois) {
   const alvoW = Math.min(480, vw * 0.72, vh * 0.62 * 1.24);
   let r = origem ? origem.getBoundingClientRect() : null;
   if (!r || !r.width) r = { left: vw / 2 - alvoW / 4, top: vh / 2 - alvoW / 5, width: alvoW / 2, height: alvoW / 2.47 };
-  Object.assign(fly.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px' });
-  const dx = vw / 2 - (r.left + r.width / 2), dy = vh / 2 - (r.top + r.height / 2), s = alvoW / r.width;
+  // a logo é desenhada já no tamanho final (nitidez) e começa "encolhida" no lugar de origem
+  const alvoH = alvoW * (r.height / r.width);
+  Object.assign(fly.style, { left: (vw - alvoW) / 2 + 'px', top: (vh - alvoH) / 2 + 'px', width: alvoW + 'px' });
+  const dx = (r.left + r.width / 2) - vw / 2, dy = (r.top + r.height / 2) - vh / 2, s0 = r.width / alvoW;
 
   // limpa execuções anteriores
   intro.getAnimations({ subtree: true }).forEach(a => a.cancel());
@@ -1380,6 +1382,10 @@ function animarEntrada(depois) {
     return;
   }
   fly.style.opacity = '';
+  // espera 2 quadros para o navegador preparar as camadas antes de começar a mexer (evita o "tranco" inicial)
+  fly.style.transform = `translate(${dx}px,${dy}px) scale(${s0})`;  // já nasce exatamente sobre a logo original
+  requestAnimationFrame(() => requestAnimationFrame(() => rodarTimeline()));
+  function rodarTimeline() {
 
   const T_HIT = 720;   // momento da explosão
   const T_OUT = 2100;  // início da saída
@@ -1389,33 +1395,39 @@ function animarEntrada(depois) {
 
   // 2) logo sai do canto e voa até o centro (antecipação + overshoot)
   A(fly, [
-    { transform: 'translate(0,0) scale(1) rotate(0deg)', offset: 0 },
-    { transform: 'translate(0,6px) scale(.94) rotate(2deg)', offset: .12 },
-    { transform: `translate(${dx}px,${dy}px) scale(${s * 1.08}) rotate(-4deg)`, offset: .82 },
-    { transform: `translate(${dx}px,${dy}px) scale(${s}) rotate(0deg)`, offset: 1 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s0}) rotate(0deg)`, offset: 0 },
+    { transform: `translate(${dx}px,${dy + 6}px) scale(${s0 * .94}) rotate(2deg)`, offset: .12 },
+    { transform: 'translate(0,0) scale(1.08) rotate(-4deg)', offset: .82 },
+    { transform: 'translate(0,0) scale(1) rotate(0deg)', offset: 1 },
   ], { duration: T_HIT, easing: 'cubic-bezier(.55,0,.25,1)' });
 
   // 3) impacto: logo "pulsa" e brilha
   A(img, [
-    { transform: 'scale(1)', filter: 'drop-shadow(0 16px 36px rgba(0,0,0,.5)) brightness(1)' },
-    { transform: 'scale(1.14)', filter: 'drop-shadow(0 0 40px rgba(255,212,0,.9)) brightness(1.5)', offset: .18 },
-    { transform: 'scale(.97)', offset: .45 },
-    { transform: 'scale(1.02)', offset: .7 },
-    { transform: 'scale(1)', filter: 'drop-shadow(0 16px 36px rgba(0,0,0,.5)) brightness(1)' },
+    { transform: 'scale(1)' }, { transform: 'scale(1.14)', offset: .18 }, { transform: 'scale(.97)', offset: .45 },
+    { transform: 'scale(1.02)', offset: .7 }, { transform: 'scale(1)' },
   ], { duration: 700, delay: T_HIT, easing: 'ease-out', fill: 'none' });
+  A($('#flyGlow'), [
+    { opacity: 0, transform: 'translate(-50%,-50%) scale(.42)' },
+    { opacity: 1, transform: 'translate(-50%,-50%) scale(.84)', offset: .15 },
+    { opacity: .35, transform: 'translate(-50%,-50%) scale(.92)', offset: .6 },
+    { opacity: 0, transform: 'translate(-50%,-50%) scale(1)' },
+  ], { duration: 1100, delay: T_HIT, easing: 'ease-out' });
 
   // tremida de câmera
   A($('#fx'), [0, 1, 2, 3, 4, 5, 6].map(i => ({ transform: i === 6 ? 'translate(0,0)' : `translate(${rnd(-9, 9)}px,${rnd(-7, 7)}px)` })), { duration: 320, delay: T_HIT, fill: 'none' });
 
   // 4) explosão: núcleo de luz, ondas de choque e raios
-  A($('#fxCore'), [{ opacity: 0, transform: 'scale(.15)' }, { opacity: 1, transform: 'scale(.9)', offset: .15 }, { opacity: 0, transform: 'scale(2.6)' }], { duration: 650, delay: T_HIT, easing: 'cubic-bezier(.2,.8,.3,1)' });
-  A($('#fxRing1'), [{ opacity: 0, transform: 'scale(.3)' }, { opacity: 1, offset: .1 }, { opacity: 0, transform: 'scale(4.2)' }], { duration: 750, delay: T_HIT, easing: 'cubic-bezier(.1,.7,.3,1)' });
-  A($('#fxRing2'), [{ opacity: 0, transform: 'scale(.3)' }, { opacity: .9, offset: .1 }, { opacity: 0, transform: 'scale(3.4)' }], { duration: 850, delay: T_HIT + 110, easing: 'cubic-bezier(.1,.7,.3,1)' });
-  A($('#fxRays'), [{ opacity: 0, transform: 'rotate(0deg) scale(.6)' }, { opacity: 1, transform: 'rotate(12deg) scale(1)', offset: .2 }, { opacity: .7, offset: .7 }, { opacity: 0, transform: 'rotate(40deg) scale(1.1)' }], { duration: T_OUT - T_HIT + 300, delay: T_HIT, easing: 'ease-out' });
+  A($('#fxCore'), [{ opacity: 0, transform: 'scale(.06)' }, { opacity: 1, transform: 'scale(.34)', offset: .15 }, { opacity: 0, transform: 'scale(1)' }], { duration: 650, delay: T_HIT, easing: 'cubic-bezier(.2,.8,.3,1)' });
+  A($('#fxRing1'), [{ opacity: 0, transform: 'scale(.07)' }, { opacity: 1, offset: .1 }, { opacity: 0, transform: 'scale(1)' }], { duration: 750, delay: T_HIT, easing: 'cubic-bezier(.1,.7,.3,1)' });
+  A($('#fxRing2'), [{ opacity: 0, transform: 'scale(.07)' }, { opacity: .9, offset: .1 }, { opacity: 0, transform: 'scale(.8)' }], { duration: 850, delay: T_HIT + 110, easing: 'cubic-bezier(.1,.7,.3,1)' });
+  A($('#fxRays'), [{ opacity: 0, transform: 'rotate(0deg) scale(1)' }, { opacity: 1, transform: 'rotate(12deg) scale(1.65)', offset: .2 }, { opacity: .7, offset: .7 }, { opacity: 0, transform: 'rotate(40deg) scale(1.85)' }], { duration: T_OUT - T_HIT + 300, delay: T_HIT, easing: 'ease-out' });
+
+  // aparelhos mais simples recebem menos elementos
+  const leve = (navigator.hardwareConcurrency || 8) <= 4 || vw < 700;
 
   // faíscas
   const sparks = $('#fxSparks');
-  for (let i = 0; i < 34; i++) {
+  for (let i = 0; i < (leve ? 18 : 30); i++) {
     const sp = document.createElement('i');
     sp.className = 'spark' + (i % 3 === 0 ? ' long' : '');
     sparks.appendChild(sp);
@@ -1429,13 +1441,14 @@ function animarEntrada(depois) {
 
   // 5) cartas lançadas de trás da logo
   const cards = $('#fxCards');
-  const N = vw < 700 ? 12 : 18;
+  const cardW = Math.max(110, Math.min(160, vw * 0.112));
+  const N = leve ? 12 : 16;
   for (let i = 0; i < N; i++) {
     const c = document.createElement('div');
     c.className = 'tcard';
     c.innerHTML = cartaHTML(i);
     cards.appendChild(c);
-    const w = c.offsetWidth || 110, h = w * 1.4;
+    const w = cardW, h = w * 1.4;
     c.style.marginLeft = -w / 2 + 'px'; c.style.marginTop = -h / 2 + 'px';
     // leque: espalha por 360°, com leve preferência para cima
     const ang = (i / N) * Math.PI * 2 + rnd(-.18, .18) - Math.PI / 2;
@@ -1445,23 +1458,25 @@ function animarEntrada(depois) {
     const rz = rnd(-260, 260), ry = (Math.random() < .5 ? -1 : 1) * rnd(360, 720);
     const dur = rnd(1250, 1650), delay = T_HIT + 30 + i * 18;
     A(c, [
-      { transform: 'translate(0,0) rotate(0deg) scale(.25)', opacity: 0 },
-      { transform: `translate(${mx * .35}px,${my * .35}px) rotate(${rz * .2}deg) scale(.9)`, opacity: 1, offset: .12 },
-      { transform: `translate(${mx}px,${my}px) rotate(${rz * .55}deg) scale(1.15)`, opacity: 1, offset: .45 },
-      { transform: `translate(${ex}px,${ey}px) rotate(${rz}deg) scale(1.3)`, opacity: 0 },
+      { transform: 'translate(0,0) rotate(0deg) scale(.2)', opacity: 0 },
+      { transform: `translate(${mx * .35}px,${my * .35}px) rotate(${rz * .2}deg) scale(.7)`, opacity: 1, offset: .12 },
+      { transform: `translate(${mx}px,${my}px) rotate(${rz * .55}deg) scale(.88)`, opacity: 1, offset: .45 },
+      { transform: `translate(${ex}px,${ey}px) rotate(${rz}deg) scale(1)`, opacity: 0 },
     ], { duration: dur, delay, easing: 'cubic-bezier(.15,.6,.35,1)' });
     A($('.tc-inner', c), [{ transform: 'rotateY(180deg) rotateX(0deg)' }, { transform: `rotateY(${180 + ry}deg) rotateX(${rnd(-40, 40)}deg)` }], { duration: dur, delay, easing: 'cubic-bezier(.2,.7,.4,1)' });
   }
 
   // 6) monta o painel por baixo e sai da animação
-  setTimeout(depois, T_HIT + 100);
+  // monta o painel num momento calmo da animação (evita engasgo na explosão)
+  setTimeout(depois, T_OUT - 380);
   const img2 = { duration: 520, delay: T_OUT, easing: 'cubic-bezier(.6,0,.4,1)', fill: 'forwards' };
   A(fly, [
-    { transform: `translate(${dx}px,${dy}px) scale(${s})`, opacity: 1 },
-    { transform: `translate(${dx}px,${dy}px) scale(${s * 1.35})`, opacity: 0 },
+    { transform: 'translate(0,0) scale(1)', opacity: 1 },
+    { transform: 'translate(0,0) scale(1.35)', opacity: 0 },
   ], img2);
   A(bg, [{ opacity: 1 }, { opacity: 0 }], { ...img2, duration: 600 });
   setTimeout(fim, T_OUT + 650);
+  }
 }
 
 const EYE = '<svg viewBox="0 0 24 24"><path d="M12 5C7 5 2.7 8.1 1 12.5 2.7 16.9 7 20 12 20s9.3-3.1 11-7.5C21.3 8.1 17 5 12 5zm0 12.5a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>';
@@ -1559,7 +1574,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
   $('#usarLocal') && ($('#usarLocal').onclick = () => trocarConexao(''));
   // prévia: clicar na logo da tela de login toca a animação (não faz login)
   $$('.hero-logo, img.auth-mobile-brand').forEach(l => { l.style.cursor = 'pointer'; l.title = 'Ver animação'; l.onclick = () => animarEntrada(() => {}); });
-  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v7</span>');
+  const ver = $('#authMode'); if (ver && !ver.querySelector('.ver')) ver.insertAdjacentHTML('beforeend', '<span class="ver">· v8</span>');
   const first = $('input:not([type=hidden]):not([type=checkbox])', card);
   if (first && !first.value) first.focus(); else { const s = $('input[type=password]', card); s && s.focus(); }
 
