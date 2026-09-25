@@ -14,7 +14,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '11';
+const APP_VERSAO = '12';
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
@@ -136,9 +136,14 @@ const Store = {
     let res;
     try { res = await fetch(this.cfg.url, { method: 'POST', body: JSON.stringify({ ...payload, token: Auth.token }) }); }
     catch (e) { throw new Error('Sem conexão com a planilha. Verifique a internet e a URL do Apps Script.'); }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const txt = await res.text();
     let j;
-    try { j = await res.json(); } catch (e) { throw new Error('Resposta inválida. Confira se a URL termina em /exec e se o acesso está como "Qualquer pessoa".'); }
+    try { j = JSON.parse(txt); } catch (e) {
+      if (/autoriza|authoriz|permiss/i.test(txt)) throw new Error('O script da planilha precisa ser autorizado de novo: abra Extensões › Apps Script, rode a função "setup" e aprove as permissões.');
+      if (/not found|não encontrad|doPost|Script function/i.test(txt)) throw new Error('O App da Web da planilha não foi encontrado. Confira a implantação (Implantar › Gerenciar implantações).');
+      if (!res.ok) throw new Error('A planilha respondeu com erro ' + res.status + '. Tente de novo em instantes.');
+      throw new Error('Resposta inválida da planilha. Confira se a URL termina em /exec e se o acesso está como "Qualquer pessoa".');
+    }
     if (!j.ok) {
       if (j.error === 'SESSAO_EXPIRADA') { Auth.expirou(); throw new Error('Sua sessão expirou. Entre novamente.'); }
       throw new Error(j.error || 'Erro desconhecido');
@@ -156,12 +161,19 @@ const Store = {
       }
     }
   },
-  async flush() {
+  _flushing: null,
+  flush() {
+    // nunca envia dois lotes ao mesmo tempo (antes isso gerava "erro de sincronização" por disputa de bloqueio na planilha)
+    if (this._flushing) return this._flushing;
+    this._flushing = this._flush().finally(() => { this._flushing = null; });
+    return this._flushing;
+  },
+  async _flush() {
     if (!this.online || !this.queue.length) return true;
     setSync('sync');
     try {
       while (this.queue.length) {
-        const lote = this.queue.slice(0, 150);
+        const lote = this.queue.slice(0, 100);
         await this.api({ action: 'batch', ops: lote });
         this.queue.splice(0, lote.length);
         this.saveCache();
@@ -170,7 +182,11 @@ const Store = {
       return true;
     } catch (e) {
       setSync('erro', e.message);
-      if (Auth.sess) toast('Não consegui salvar na planilha: ' + e.message + ' As alterações ficam guardadas e serão reenviadas.', 'err');
+      const agoraMs = Date.now();
+      if (Auth.sess && agoraMs - (this._ultimoAviso || 0) > 60000) {   // no máximo 1 aviso por minuto
+        this._ultimoAviso = agoraMs;
+        toast('Não consegui salvar na planilha agora. As alterações ficam guardadas e serão reenviadas sozinhas. Clique em “Erro de sincronização” para ver o motivo.', 'err');
+      }
       return false;
     }
   },
@@ -183,14 +199,22 @@ const Store = {
     try { backupLocalDiario(); } catch (e) {}
     await this.flush();
   },
-  async load() {
+  _loading: null,
+  load() {
+    if (this._loading) return this._loading;
+    this._loading = this._load().finally(() => { this._loading = null; });
+    return this._loading;
+  },
+  async _load() {
     if (!this.online) { setSync('local'); return; }
     const ok = await this.flush();
     if (!ok) return;
     setSync('sync');
     try {
       const d = await this.api({ action: 'getAll' });
+      if (this.queue.length) return;   // alterações feitas durante a leitura: não sobrescreve
       for (const k of Object.keys(COLS)) this.data[k] = (d[k] || []).map(r => this.normalize(k, r));
+      this.ultimaLeitura = Date.now();
       this.saveCache();
       setSync('ok');
     } catch (e) {
@@ -202,12 +226,31 @@ const Store = {
 const up = (sheet, record) => ({ op: 'upsert', sheet, record });
 const del = (sheet, id) => ({ op: 'delete', sheet, id });
 
+const SyncInfo = { estado: 'local', erro: '', ok: 0 };
 function setSync(state, detalhe) {
+  SyncInfo.estado = state;
+  if (state === 'erro') SyncInfo.erro = detalhe || ''; else if (state === 'ok') { SyncInfo.erro = ''; SyncInfo.ok = Date.now(); }
   const el = $('#sync');
   el.className = 'sync ' + (state === 'local' ? '' : state);
   const txt = { local: 'Modo local (sem planilha)', ok: 'Sincronizado com a planilha', sync: 'Sincronizando…', erro: 'Erro de sincronização' }[state];
   $('.txt', el).textContent = txt + (state === 'erro' && Store.queue.length ? ` · ${Store.queue.length} pendente(s)` : '');
-  el.title = detalhe || '';
+  el.title = state === 'erro' ? 'Clique para ver o motivo' : '';
+  el.style.cursor = Store.online ? 'pointer' : '';
+}
+function detalhesSync() {
+  if (!Store.online) return;
+  const pend = Store.queue.length;
+  Modal.open({
+    title: 'Sincronização com a planilha', small: true, submit: 'Sincronizar agora',
+    body: `<div class="grid">
+      <div class="note ${SyncInfo.estado === 'erro' ? 'warn' : ''}"><b>Situação:</b> ${{ ok: 'sincronizado ✓', sync: 'sincronizando…', erro: 'com erro', local: 'modo local' }[SyncInfo.estado] || SyncInfo.estado}
+      ${SyncInfo.ok ? `<br><b>Última sincronização:</b> ${new Date(SyncInfo.ok).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'medium' })}` : ''}
+      <br><b>Alterações aguardando envio:</b> ${pend}</div>
+      ${SyncInfo.erro ? `<div><b>Motivo do erro:</b><div class="note warn" style="margin-top:6px">${esc(SyncInfo.erro)}</div></div>` : ''}
+      <p class="muted" style="margin:0;font-weight:700;font-size:13px">Nada se perde: o que não foi enviado fica guardado neste aparelho e o sistema tenta de novo sozinho a cada 30 segundos.</p>
+    </div>`,
+    onSubmit: async () => { await Store.flush(); await Store.load(); render(); toast(SyncInfo.estado === 'ok' ? 'Sincronizado' : 'Ainda com erro — veja o motivo', SyncInfo.estado === 'ok' ? 'ok' : 'err'); },
+  });
 }
 
 /* ---------------- Lookups & cálculos ---------------- */
@@ -1528,7 +1571,7 @@ function formContato(c, tipo = 'Cliente') {
   Modal.open({
     title: novo ? 'Novo ' + nomeTipo : 'Editar ' + nomeTipo,
     body: `
-      <div class="grid g4" style="margin-bottom:14px">${field('É', `<select name="tipo">${opt([['Cliente', 'Cliente'], ['Fornecedor', 'Fornecedor'], ['Ambos', 'Cliente e fornecedor']], c.tipo)}</select>`)}</div>
+      <input type="hidden" name="tipo" value="${esc(c.tipo)}">
       ${camposPessoa('pc', c)}
       <div style="margin-top:14px">${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`)}</div>`,
     onOpen: body => ligarDocumento($('[data-pc=documento]', body), $('[data-pc=docStatus]', body), k => $(`[data-pc=${k}]`, body), c.id),
@@ -1860,7 +1903,7 @@ const Auth = {
     Store.load().then(async () => {
       render();
       await migrarLocal();
-      backupAutomatico();
+      setTimeout(backupAutomatico, 20000);   // depois que tudo carregou, sem disputar com o uso
     });
   },
   async logout() {
@@ -2226,3 +2269,11 @@ Store.init();
 Auth.init();
 window.addEventListener('online', () => Auth.sess && Store.flush());
 $('#logoutBtn').onclick = () => Auth.logout();
+$('#sync').onclick = detalhesSync;
+setInterval(() => { if (Auth.sess && Store.online && Store.queue.length) Store.flush(); }, 30000);
+document.addEventListener('visibilitychange', () => {
+  // ao voltar para o app, busca o que o sócio lançou (no máximo 1 vez por minuto)
+  if (document.visibilityState !== 'visible' || !Auth.sess || !Store.online) return;
+  if (Store.queue.length) { Store.flush(); return; }
+  if (Date.now() - (Store.ultimaLeitura || 0) > 60000 && !$('#modal').open) Store.load().then(render);
+});
