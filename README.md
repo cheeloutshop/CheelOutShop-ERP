@@ -134,6 +134,13 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - `sw.js`: o site fica guardado no aparelho e abre na hora; pode ser **instalado como app** (Chrome/Edge: ícone de instalar na barra de endereço; iPhone: Compartilhar › Adicionar à Tela de Início).
 - **Atualize o script** (nova versão da implantação) e rode `setup` uma vez para criar o agendamento.
 
+## v24 — estoque de insumos
+
+- **Estoque › Insumos**: cadastro dos insumos (criados a partir da compra de insumos nº 1), saldo, custo e valor em estoque.
+- Compras de insumos marcadas como **Recebido** entram sozinhas no estoque de insumos.
+- **Balanço de insumos** todo mês (aviso no Painel): consumo = saldo do sistema − contagem; custo do consumo ÷ pedidos faturados no período = **custo de insumos por pedido**.
+- **Atualize o script** (nova versão da implantação): abas `insumoItens`, `insumoMovs` e `insumoBals` criadas sozinhas.
+
 ## Como os dados se ligam
 
 ```
