@@ -17,7 +17,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '19.3';
+const APP_VERSAO = '19.4';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -1590,14 +1590,54 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
 function itemRowCompra(it) {
   const un = it.un || 'UN', emb = un !== 'UN';
   return `<tr>
-    <td class="c-prod"><select data-i="prod">${prodOptionsPedido(it.produtoId)}</select><small data-i="ult" class="ult-custo"></small></td>
+    <td class="c-prod"><div class="ac ac-compra"><input class="ac-txt" data-i="prodTxt" autocomplete="off" placeholder="Digite 3 letras do produto…" value="${esc(it.produtoId ? nomeProduto(it.produtoId) : '')}"><input type="hidden" data-i="prod" value="${esc(it.produtoId || '')}"><div class="ac-list" hidden></div></div></td>
     <td class="c-un"><select data-i="un" title="Como vem na compra">${opt(UN_COMPRA, un)}</select></td>
     <td class="c-fat"><input data-i="fator" inputmode="numeric" value="${emb ? esc(it.fator || '') : ''}" placeholder="${emb ? 'ex.: 12' : '—'}" ${emb ? '' : 'disabled'} title="Quantas unidades vêm em cada embalagem"></td>
     <td class="c-qtd"><input data-i="qtd" inputmode="decimal" value="${esc(it.qtd ?? 1)}"></td>
-    <td class="c-val"><input data-i="valor" inputmode="decimal" value="${dec(it.valor)}" placeholder="custo"></td>
+    <td class="c-val"><input data-i="valor" inputmode="decimal" value="${dec(it.valor)}" placeholder="custo"><small data-i="ult" class="ult-custo"></small></td>
     <td class="c-sub"><span data-i="sub"></span><small data-i="eq"></small></td>
     <td class="act"><button type="button" class="icon-btn del" data-i="rm" title="Remover">${ICON.del}</button></td>
   </tr>`;
+}
+
+/* Busca de produto no pedido de compra: lista só depois de 3 letras, só o que combina; sem resultado → cadastrar novo */
+function prodPickerCompra(tr, onNovo) {
+  const wrap = $('.ac-compra', tr), txt = $('.ac-txt', wrap), hid = $('[data-i=prod]', wrap), list = $('.ac-list', wrap);
+  let itens = [], ativo = -1;
+  const fechar = () => { list.hidden = true; ativo = -1; };
+  const marcar = () => $$('.ac-item', list).forEach((el, i) => el.classList.toggle('on', i === ativo));
+  const escolher = pr => { txt.value = pr.nome; hid.value = pr.id; fechar(); hid.dispatchEvent(new Event('change', { bubbles: true })); setTimeout(() => $('[data-i=qtd]', tr).focus(), 20); };
+  const abrir = () => {
+    const q = txt.value.trim();
+    if (q.length < 3) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 3 letras do produto (ou o código)…</div>'; list.hidden = false; posicionar(); return; }
+    const r = Store.data.produtos.filter(p => p.ativo !== 'nao' && (match(q, p.nome, p.sku) || (p.ean && p.ean === q))).sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 12);
+    itens = r.length ? r.map(p => ({ p })) : [{ novo: true }];
+    list.innerHTML = r.length
+      ? r.map((p, i) => `<div class="ac-item ac-prod" data-k="${i}">${fotoHTML(p, 'ac-foto')}<span><b>${esc(p.nome)}</b><small>${esc(p.sku || '')} · último custo ${brl(ultimoCusto(p.id))}</small></span></div>`).join('')
+      : `<div class="ac-hint">Nenhum produto encontrado.</div><div class="ac-item ac-novo" data-k="0">➕ Cadastrar novo produto “${esc(q)}”</div>`;
+    ativo = 0; marcar(); list.hidden = false; posicionar();
+  };
+  // a lista fica "flutuando" por cima da tabela (a tabela corta o que passa da borda)
+  const posicionar = () => { const r = txt.getBoundingClientRect(); Object.assign(list.style, { position: 'fixed', left: r.left + 'px', top: (r.bottom + 4) + 'px', width: Math.min(innerWidth - r.left - 16, Math.max(r.width, 460)) + 'px', right: 'auto', maxHeight: Math.max(160, Math.min(320, innerHeight - r.bottom - 16)) + 'px' }); };
+  $('#modalBody').addEventListener('scroll', () => { if (!list.hidden) posicionar(); }, { passive: true });
+  const pick = k => { const it = itens[k]; if (!it) return; fechar(); if (it.novo) onNovo(tr, txt.value.trim()); else escolher(it.p); };
+  txt.addEventListener('input', () => { if (hid.value) { hid.value = ''; hid.dispatchEvent(new Event('change', { bubbles: true })); } abrir(); });
+  txt.addEventListener('focus', () => { if (!hid.value && txt.value.trim()) abrir(); });
+  txt.addEventListener('blur', () => setTimeout(fechar, 150));
+  txt.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const ean = Store.data.produtos.find(p => p.ean && p.ean === txt.value.trim());
+      if (ean) return escolher(ean);
+      if (!list.hidden) pick(ativo); return;
+    }
+    if (list.hidden || !itens.length) return;
+    if (e.key === 'ArrowDown') { ativo = Math.min(itens.length - 1, ativo + 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { ativo = Math.max(0, ativo - 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'Escape') { fechar(); e.preventDefault(); e.stopPropagation(); }
+  });
+  list.addEventListener('mousedown', e => { const it = e.target.closest('.ac-item'); if (!it) return; e.preventDefault(); pick(+it.dataset.k); });
+  return { escolher };
 }
 
 function formCompra(p) {
@@ -1691,9 +1731,9 @@ function formCompra(p) {
             if (!uc) { ult.innerHTML = 'Último custo: <b>sem histórico</b>'; ult.className = 'ult-custo'; }
             else if (!(q && v && f)) { ult.innerHTML = `Último custo: <b>${brl(uc)}/un</b>`; ult.className = 'ult-custo'; }
             else {
-              const dif = (cu - uc) / uc * 100;
+              const dif = (cu - uc) / uc * 100, difR = cu - uc, tot = difR * q * f;
               const igual = Math.abs(dif) < 0.5;
-              ult.innerHTML = `Último custo: <b>${brl(uc)}/un</b> · ${igual ? '= igual' : (dif > 0 ? '▲ ' : '▼ ') + fmtPct(Math.abs(dif)) + '% ' + (dif > 0 ? 'acima' : 'abaixo')}`;
+              ult.innerHTML = `Último custo: <b>${brl(uc)}/un</b><br>${igual ? '= mesmo custo' : `${dif > 0 ? '▲' : '▼'} ${brl(Math.abs(difR))}/un (${dif > 0 ? '+' : '−'}${fmtPct(Math.abs(dif))}%) · ${brl(Math.abs(tot))} ${dif > 0 ? 'a mais' : 'a menos'} no item`}`;
               ult.className = 'ult-custo ' + (igual ? '' : dif > 0 ? 'acima' : 'abaixo');
             }
           } else { ult.textContent = ''; ult.className = 'ult-custo'; }
@@ -1713,7 +1753,6 @@ function formCompra(p) {
       tb.addEventListener('input', recalc);
       tb.addEventListener('change', e => {
         const tr = e.target.closest('tr');
-        if (e.target.dataset.i === 'prod' && e.target.value === NOVO_PROD) { e.target.value = ''; abrirProduto(tr); return; }
         if (e.target.dataset.i === 'un') {
           const f = $('[data-i=fator]', tr), emb = e.target.value !== 'UN';
           f.disabled = !emb; f.placeholder = emb ? 'ex.: 12' : '—'; if (!emb) f.value = ''; else setTimeout(() => f.focus(), 30);
@@ -1729,7 +1768,9 @@ function formCompra(p) {
         const b = e.target.closest('[data-i=rm]');
         if (b) { if ($$('tr', tb).length > 1) b.closest('tr').remove(); else { $('select', b.closest('tr')).value = ''; } recalc(); }
       });
-      $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); recalc(); $('tr:last-child select', tb).focus(); };
+      const ligar = tr => { if (!tr._pk) tr._pk = prodPickerCompra(tr, (row, nome) => { abrirProduto(row); $('[data-np=nome]', $('#pnlProduto', body)).value = nome; }); };
+      $$('tr', tb).forEach(ligar);
+      $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); const tr = $('tr:last-child', tb); ligar(tr); recalc(); $('.ac-txt', tr).focus(); };
       ['#pedFrete', '#pedDesc', '#pgParc'].forEach(s => $(s, body).oninput = recalc);
       $('#pgForma', body).onchange = () => { if ($('#pgForma').value === INTEGRACAO && $('#pedStatus').value === 'Em aberto') $('#pedStatus').value = 'Recebido'; recalc(); };
 
@@ -1776,10 +1817,9 @@ function formCompra(p) {
         { const dupN = produtoComNome(g('nome')); if (dupN) { toast(msgNomeDup(dupN) + ' — escolha-o na lista', 'err'); return; } }
         const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora() };
         Store.commit([up('produtos', pr)]);
-        $$('[data-i=prod]', tb).forEach(s => { const v = s.value; s.innerHTML = prodOptionsPedido(v === NOVO_PROD ? '' : v); });
         let tr = linhaAlvo && tb.contains(linhaAlvo) ? linhaAlvo : $$('tr', tb).find(r => !$('[data-i=prod]', r).value);
-        if (!tr) { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); tr = $('tr:last-child', tb); }
-        $('[data-i=prod]', tr).value = pr.id;
+        if (!tr) { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); tr = $('tr:last-child', tb); ligar(tr); }
+        $('[data-i=prod]', tr).value = pr.id; $('[data-i=prodTxt]', tr).value = pr.nome;
         const u = $('[data-i=un]', tr).value, f = u === 'UN' ? 1 : num($('[data-i=fator]', tr).value);
         if (pr.custo && f) $('[data-i=valor]', tr).value = dec(pr.custo * f);
         pnlP.hidden = true; linhaAlvo = null; recalc();
@@ -1797,6 +1837,8 @@ function formCompra(p) {
       if (!$('#pnlProduto', body).hidden && $('[data-np=nome]', body).value.trim()) { toast('Termine o cadastro do produto (Salvar produto) ou clique em Cancelar', 'err'); return false; }
       if (!$('#pnlContato', body).hidden && $('[data-nc=nome]', body).value.trim()) { toast('Termine o cadastro do fornecedor (Salvar fornecedor) ou clique em Cancelar', 'err'); return false; }
       if (!fd.contatoId) { toast('Escolha um fornecedor na lista (digite 3 letras) ou cadastre um novo', 'err'); $('#acForn .ac-txt', body).focus(); return false; }
+      const semProd = $$('#itensBody tr', body).find(tr => $('[data-i=prodTxt]', tr).value.trim() && !$('[data-i=prod]', tr).value);
+      if (semProd) { toast(`Escolha “${$('[data-i=prodTxt]', semProd).value.trim()}” na lista ou cadastre como produto novo`, 'err'); $('[data-i=prodTxt]', semProd).focus(); return false; }
       const linhas = $$('#itensBody tr', body).map(tr => {
         const un = $('[data-i=un]', tr).value;
         return { produtoId: $('[data-i=prod]', tr).value, un, fator: un === 'UN' ? 1 : Math.floor(num($('[data-i=fator]', tr).value)), qtd: num($('[data-i=qtd]', tr).value), valor: r2($('[data-i=valor]', tr).value) };
