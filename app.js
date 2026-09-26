@@ -17,7 +17,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '19.4';
+const APP_VERSAO = '19.5';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -277,6 +277,8 @@ function saldos() {
 }
 function statusConta(c) {
   if (c.status === 'Pago') return 'Pago';
+  // Jamble: passou do prazo = disponível para saque (não é atraso, não notifica)
+  if (ehRecJamble(c)) return c.vencimento && c.vencimento < hoje() ? 'Disponível' : 'Aberto';
   if (c.vencimento && c.vencimento < hoje()) return 'Vencido';
   return 'Aberto';
 }
@@ -551,7 +553,7 @@ function viewPainel(el) {
   const fv = UI.fVenc || 'todos';
   const diasAte = d => Math.round((new Date(d + 'T12:00:00') - new Date(hoje() + 'T12:00:00')) / 864e5);
   const todasProx = [
-    ...recAb.map(c => ({ ...c, _t: 'receber' })),
+    ...recAb.filter(c => statusConta(c) !== 'Disponível').map(c => ({ ...c, _t: 'receber' })),
     ...pagAb.map(c => ({ ...c, _t: 'pagar' })),
   ].filter(c => c.vencimento && c.vencimento <= limite).sort((a, b) => a.vencimento.localeCompare(b.vencimento));
   const proximas = todasProx.filter(c => fv === 'todos' || c._t === fv);
@@ -1924,7 +1926,7 @@ function viewContas(tipo) {
           <td class="wrap">${esc(nomeContato(c.contatoId))}</td>
           <td class="muted">${esc(c.categoria)}</td>
           <td class="r strong">${brl(c.valor)}</td>
-          <td><span class="badge ${s === 'Pago' ? 'green' : s === 'Vencido' ? 'red' : 'amber'}">${s === 'Pago' ? (R ? 'Recebido' : 'Pago') : s}</span></td>
+          <td><span class="badge ${s === 'Pago' ? 'green' : s === 'Vencido' ? 'red' : s === 'Disponível' ? '' : 'amber'}" ${s === 'Disponível' ? 'title="Jamble: liberado para saque"' : ''}>${s === 'Pago' ? (R ? 'Recebido' : 'Pago') : s}</span></td>
           <td class="muted">${c.status === 'Pago' ? dataBR(c.pagoEm) + (num(c.valorPago) && num(c.valorPago) !== num(c.valor) ? ' · ' + brl(c.valorPago) : '') : ''}</td>
           <td class="act"><span class="inner">
             ${c.status === 'Pago' ? `<button class="btn ghost sm" data-estorno="${c.id}">${ICON.undo}Estornar</button>` : `<button class="btn ghost sm" data-baixa="${c.id}">${ICON.check}${R ? 'Receber' : 'Pagar'}</button>`}
@@ -2052,10 +2054,10 @@ function barraJamble(compacto) {
   const J = jambleInfo();
   if (!J.abertos.length && !J.saques.length && !J.pend.length) return '';
   const ult = J.saques[0];
-  return `<div class="jamble-bar ${J.atrasados.length ? 'alerta' : ''}">
+  return `<div class="jamble-bar">
     <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>disponível <b class="pos">${brl(J.disponivel)}</b> · a liberar <b>${brl(J.aLiberar)}</b>${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
-    <div class="jb-alert">${J.atrasados.length ? `⚠ <b>${brl(J.saldoAtrasado)}</b> já passou de ${JAMBLE_DIAS} dias (${J.atrasados.length} lançamento(s)) — disponível para saque` : J.disponivel ? `✓ ${brl(J.disponivel)} disponível para saque` : `✓ nada passou de ${JAMBLE_DIAS} dias`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
-    <div class="jb-act"><button class="btn accent sm" data-saque>${ICON.down}Registrar saque</button>${compacto ? '' : `<button class="btn ghost sm" data-hist-saque>Histórico</button>`}${compacto && J.atrasados.length ? `<a class="btn ghost sm" href="#/receber" data-ver-atraso>Ver vendas</a>` : ''}</div>
+    <div class="jb-alert">${J.disponivel ? `✓ ${brl(J.disponivel)} disponível para saque` : `✓ nada liberado para saque ainda`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
+    <div class="jb-act"><button class="btn accent sm" data-saque>${ICON.down}Registrar saque</button>${compacto ? '' : `<button class="btn ghost sm" data-hist-saque>Histórico</button>`}${compacto && J.disponivel ? `<a class="btn ghost sm" href="#/receber" data-ver-atraso>Ver vendas</a>` : ''}</div>
   </div>`;
 }
 function ligarBarraJamble(el) {
