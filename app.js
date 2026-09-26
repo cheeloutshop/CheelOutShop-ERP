@@ -24,7 +24,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '24';
+const APP_VERSAO = '24.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -4137,7 +4137,7 @@ const Auth = {
     try { this.sess = JSON.parse(localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || 'null'); } catch (e) { this.sess = null; }
     if (this.sess && (Date.now() > num(this.sess.exp) || this.sess.modo !== this.modo || (this.sess.modo === 'online' && this.sess.url !== Store.cfg.url))) this.limpar();
     $('#ano').textContent = new Date().getFullYear();
-    if (this.sess) entrarComAnimacao(); else this.mostrarLogin('login');
+    if (this.sess) this.entrar(); else this.mostrarLogin('login');   // sessão salva: entra direto (a animação é só no login)
   },
   salvar(s, lembrar) {
     this.sess = { ...s, email: normEmail(s.email), modo: this.modo, url: Store.cfg.url };
