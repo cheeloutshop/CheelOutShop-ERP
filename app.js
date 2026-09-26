@@ -17,11 +17,14 @@ const COLS = {
   insumos:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm'],
   plataformas: ['id', 'nome', 'comissao', 'ativo', 'criadoEm'],
   saques:     ['id', 'data', 'plataforma', 'valor', 'obs', 'criadoEm', 'taxa', 'antecipacao'],
+  insumoItens: ['id', 'nome', 'unidade', 'custo', 'estoqueMin', 'ativo', 'criadoEm'],
+  insumoMovs:  ['id', 'data', 'insumoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
+  insumoBals:  ['id', 'data', 'itens', 'pedidos', 'custoTotal', 'custoPedido', 'obs', 'criadoEm'],
   pagar:      ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '23';
+const APP_VERSAO = '24';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -597,6 +600,7 @@ const inp = (name, val = '', attrs = '') => `<input name="${name}" value="${esc(
 const ROUTES = {
   painel:   { t: 'Painel', s: 'Visão geral da Cheel Out Shop', fn: viewPainel },
   vendas:   { t: 'Vendas', s: 'Pedidos de venda, orçamentos e faturamento', fn: viewVendas },
+  'estoque-insumos': { t: 'Insumos', s: 'Estoque de embalagens e materiais de envio · custo por pedido', fn: viewEstoqueInsumos },
   insumos:  { t: 'Compra de insumos', s: 'Embalagens e materiais para separar e enviar pedidos', fn: viewInsumos },
   compras:  { t: 'Pedidos de compra', s: 'Compras de fornecedores e recebimento de mercadoria', fn: viewCompras },
   clientes:     { t: 'Clientes', s: 'Cadastro de clientes', fn: el => viewContatos(el, 'Cliente') },
@@ -684,7 +688,9 @@ function viewPainel(el) {
       <div class="pa-h"><b>💡 ${revisar.length} produto(s) com custo de reposição maior — revise o preço</b><span>O preço sugerido mantém o mesmo markup que o produto tinha, calculado sobre o custo da última compra.</span></div>
       <div class="pa-list">${revisar.slice(0, 8).map(p => `<div class="pa-it"><span class="wrap"><b>${esc(p.nome)}</b><small>custo médio ${brl(p.custo)} · última compra ${brl(ultimoCusto(p.id))}</small></span><span class="pa-precos">${brl(p.preco)} → <b>${brl(p.precoSugerido)}</b></span><span class="pa-bt"><button class="btn accent sm" data-psug="${p.id}">Aplicar</button><button class="btn ghost sm" data-pkeep="${p.id}">Manter</button></span></div>`).join('')}${revisar.length > 8 ? `<div class="muted" style="font-size:12.5px;font-weight:700">e mais ${revisar.length - 8} na aba Produtos</div>` : ''}</div>
     </div>` : '';
-  el.innerHTML = alertaNeg + alertaPreco + barraJamble(true) + `
+  const pendIns = balancoInsumosPendente();
+  const alertaIns = pendIns ? `<div class="ins-alerta"><span>📦 ${pendIns === 'inicial' ? '<b>Lance as quantidades de insumos</b> que vocês têm hoje (primeiro balanço).' : '<b>Balanço mensal de insumos</b> pendente — conte os insumos para calcular o custo por pedido.'}</span><a class="btn accent sm" href="#/estoque-insumos">Fazer balanço</a></div>` : '';
+  el.innerHTML = alertaNeg + alertaIns + alertaPreco + barraJamble(true) + `
     <div class="kpis">
       <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${comissoesMes(mes) ? ` · comissões <span class="neg">${brl(comissoesMes(mes))}</span>` : ''}</div></div>
       <div class="card kpi green kpi-link" data-ir="receber" role="link" tabindex="0" title="Abrir contas a receber"><div class="lbl">A receber (em aberto) <span class="kpi-seta">›</span></div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
@@ -3386,7 +3392,7 @@ function itemRowInsumo(it) {
   </tr>`;
 }
 function efeitosInsumo(c) {
-  const ops = [];
+  const ops = opsEstoqueInsumo(c);
   const pags = Store.data.pagar.filter(r => r.origem === 'insumo' && r.origemId === c.id);
   const temPago = pags.some(r => r.status === 'Pago');
   if (c.status === 'Cancelado') { pags.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id))); return ops; }
@@ -3401,6 +3407,176 @@ function efeitosInsumo(c) {
   }));
   return ops;
 }
+/* =========================================================
+   INSUMOS — estoque, balanço mensal e custo de insumos por pedido
+   ========================================================= */
+const insumoItem = id => Store.data.insumoItens.find(x => x.id === id);
+const insumoPorNome = n => Store.data.insumoItens.find(x => nomeChave(x.nome) === nomeChave(n));
+const ultimoBalInsumo = () => [...Store.data.insumoBals].sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0] || null;
+const depoisDoBal = (m, bal) => !bal || (m.data || '') > bal.data || ((m.data || '') === bal.data && (m.criadoEm || '') > (bal.criadoEm || ''));
+/* saldo = contagem do último balanço + entradas/saídas lançadas depois dele */
+function saldosInsumos() {
+  const bal = ultimoBalInsumo(), s = {};
+  if (bal) (bal.itens || []).forEach(i => { s[i.insumoId] = num(i.contado); });
+  for (const m of Store.data.insumoMovs) if (depoisDoBal(m, bal)) s[m.insumoId] = (s[m.insumoId] || 0) + (m.tipo === 'saida' ? -1 : 1) * num(m.quantidade);
+  return s;
+}
+/* custo por unidade de uso: última compra (entrada com custo); senão o do cadastro */
+function custoInsumo(id) {
+  const m = Store.data.insumoMovs.filter(x => x.insumoId === id && x.tipo === 'entrada' && num(x.custoUnit) > 0).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0];
+  return m ? num(m.custoUnit) : num(insumoItem(id)?.custo);
+}
+/* compra de insumos RECEBIDA → entrada no estoque de insumos (cadastra o insumo se ainda não existir) */
+function opsEstoqueInsumo(c) {
+  const ops = [];
+  Store.data.insumoMovs.filter(m => m.origem === 'compra' && m.origemId === c.id).forEach(m => ops.push(del('insumoMovs', m.id)));
+  if (c.status !== 'Recebido') return ops;
+  const novos = {};
+  for (const it of c.itens || []) {
+    const nome = String(it.descricao || '').trim(); if (!nome || !(num(it.qtd) > 0)) continue;
+    let ins = insumoPorNome(nome) || novos[nomeChave(nome)];
+    if (!ins) { ins = { id: uid(), nome, unidade: it.un || 'UN', custo: r2(it.valor), estoqueMin: '', ativo: 'sim', criadoEm: agora() }; novos[nomeChave(nome)] = ins; ops.push(up('insumoItens', ins)); }
+    ops.push(up('insumoMovs', { id: uid(), data: c.data || hoje(), insumoId: ins.id, tipo: 'entrada', quantidade: num(it.qtd), custoUnit: Math.round(num(it.valor) * 1e4) / 1e4, origem: 'compra', origemId: c.id, obs: 'Compra de insumos nº ' + c.numero, criadoEm: agora() }));
+  }
+  return ops;
+}
+/* pedidos enviados num período (vendas faturadas; retiradas e sorteios de sócios não contam) */
+const pedidosNoPeriodo = (de, ate) => Store.data.vendas.filter(v => vendaReal(v) && (!de || (v.data || '') > de) && (v.data || '') <= ate).length;
+function balancoInsumosPendente() {
+  if (!Store.data.insumoItens.some(i => i.ativo !== 'nao')) return null;
+  const bal = ultimoBalInsumo();
+  if (!bal) return 'inicial';
+  return (bal.data || '').slice(0, 7) < mesAtual() ? 'mensal' : null;
+}
+function viewEstoqueInsumos(el) {
+  actions(`<button class="btn ghost" id="insBal">📋 Balanço de insumos</button><button class="btn ghost" id="insEnt">${ICON.plus}Lançar entrada</button><button class="btn accent" id="insNovo">${ICON.plus}Novo insumo</button>`);
+  const sal = saldosInsumos(), bal = ultimoBalInsumo();
+  const itens = Store.data.insumoItens.filter(i => UI.insTodos || i.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
+  const valor = itens.reduce((t, i) => t + Math.max(0, sal[i.id] || 0) * custoInsumo(i.id), 0);
+  const bals = [...Store.data.insumoBals].sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')));
+  const comCusto = bals.filter(b => b.custoPedido !== '' && b.custoPedido != null && num(b.pedidos) > 0);
+  const pend = balancoInsumosPendente();
+  el.innerHTML = `
+    ${pend ? `<div class="note warn" style="margin:0 0 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span>${pend === 'inicial' ? '📦 Lance as <b>quantidades de insumos que vocês têm hoje</b> (primeiro balanço). A partir do próximo balanço o sistema calcula o custo de insumos por pedido.' : `📦 <b>Balanço mensal de insumos pendente</b> — o último foi em ${dataBR(bal.data)}.`}</span><button class="btn accent sm" id="insBal2">Fazer balanço agora</button></div>` : ''}
+    <div class="kpis">
+      <div class="card kpi blue"><div class="lbl">Insumos cadastrados</div><div class="val">${Store.data.insumoItens.filter(i => i.ativo !== 'nao').length}</div><div class="hint">${itens.filter(i => num(i.estoqueMin) && (sal[i.id] || 0) <= num(i.estoqueMin)).length} abaixo do mínimo</div></div>
+      <div class="card kpi"><div class="lbl">Valor em estoque de insumos</div><div class="val">${brl(valor)}</div><div class="hint">pelo último custo de compra</div></div>
+      <div class="card kpi green"><div class="lbl">Custo de insumos por pedido</div><div class="val">${comCusto.length ? brl(comCusto[0].custoPedido) : '—'}</div><div class="hint">${comCusto.length ? `${num(comCusto[0].pedidos)} pedido(s) · balanço de ${dataBR(comCusto[0].data)}` : 'aparece a partir do 2º balanço'}</div></div>
+      <div class="card kpi red"><div class="lbl">Último balanço</div><div class="val">${bal ? dataBR(bal.data) : '—'}</div><div class="hint">${bal ? `consumo ${brl(bal.custoTotal)}` : 'nenhum ainda'}</div></div>
+    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Insumo</th><th>Unidade</th><th class="r">Saldo</th><th class="r">Mínimo</th><th class="r">Custo un.</th><th class="r">Valor</th><th></th></tr></thead>
+      <tbody>${itens.length ? itens.map(i => { const sd = sal[i.id] || 0, mn = num(i.estoqueMin); return `<tr>
+        <td class="wrap strong">${esc(i.nome)} ${i.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}</td><td>${esc(i.unidade || 'UN')}</td>
+        <td class="r strong"><span class="badge ${sd <= 0 ? 'red' : mn && sd <= mn ? 'amber' : 'green'}">${qtdFmt(sd)}</span></td><td class="r muted">${mn ? qtdFmt(mn) : '—'}</td>
+        <td class="r">${brl(custoInsumo(i.id))}</td><td class="r">${brl(Math.max(0, sd) * custoInsumo(i.id))}</td>
+        <td class="act"><span class="inner"><button class="icon-btn" data-ins-ed="${i.id}" title="Editar">${ICON.edit}</button></span></td></tr>`; }).join('') : emptyRow(7, 'Nenhum insumo cadastrado. Use “Novo insumo”.', '📦')}</tbody>
+    </table></div>
+    <label class="check" style="margin:10px 0 0;font-size:13px"><input type="checkbox" id="insTodos" ${UI.insTodos ? 'checked' : ''}> mostrar inativos</label>
+    <div class="section-t">Balanços de insumos</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Data</th><th class="r">Itens contados</th><th class="r">Consumo (custo)</th><th class="r">Pedidos no período</th><th class="r">Custo por pedido</th><th></th></tr></thead>
+      <tbody>${bals.length ? bals.map(b => `<tr><td class="strong">${dataBR(b.data)}</td><td class="r">${(b.itens || []).length}</td><td class="r">${b.pedidos === '' || b.pedidos == null ? '<span class="muted">base inicial</span>' : brl(b.custoTotal)}</td><td class="r">${b.pedidos === '' || b.pedidos == null ? '—' : num(b.pedidos)}</td><td class="r strong">${num(b.pedidos) > 0 ? brl(b.custoPedido) : '—'}</td><td class="act"><button class="btn ghost sm" data-ins-bal="${b.id}">Ver</button></td></tr>`).join('') : emptyRow(6, 'Nenhum balanço ainda.', '📋')}</tbody>
+    </table></div>`;
+  $('#insNovo').onclick = () => formInsumoItem();
+  $('#insEnt').onclick = () => formEntradaInsumo();
+  $('#insBal').onclick = formBalancoInsumos; $('#insBal2') && ($('#insBal2').onclick = formBalancoInsumos);
+  $('#insTodos').onchange = e => { UI.insTodos = e.target.checked; render(); };
+  $$('[data-ins-ed]', el).forEach(b => b.onclick = () => formInsumoItem(insumoItem(b.dataset.insEd)));
+  $$('[data-ins-bal]', el).forEach(b => b.onclick = () => verBalancoInsumos(Store.data.insumoBals.find(x => x.id === b.dataset.insBal)));
+}
+function formInsumoItem(i) {
+  const novo = !i; i = i || { unidade: 'UN', ativo: 'sim' };
+  Modal.open({
+    title: novo ? 'Novo insumo' : 'Editar insumo', small: true,
+    body: `<div class="grid g2">
+      ${field('Nome do insumo *', inp('nome', i.nome, 'required placeholder="ex.: Caixa de papelão 20×15×10"'), 'span2')}
+      ${field('Unidade', `<select name="unidade">${opt(UN_INSUMO, i.unidade || 'UN')}</select>`)}
+      ${field('Custo por unidade (R$)', inp('custo', dec(i.custo), 'inputmode="decimal" placeholder="0,00"'))}
+      ${field('Estoque mínimo', inp('estoqueMin', i.estoqueMin, 'inputmode="decimal" placeholder="0"'))}
+      ${field('Situação', `<select name="ativo">${opt([['sim', 'Ativo'], ['nao', 'Inativo']], i.ativo)}</select>`)}
+      ${novo ? field('Quantidade que vocês têm hoje', inp('qtdIni', '', 'inputmode="decimal" placeholder="opcional"'), 'span2') : ''}
+    </div><p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">O custo é atualizado sozinho pela última compra de insumos recebida.</p>`,
+    onSubmit: fd => {
+      const nome = fd.nome.trim(); if (!nome) return false;
+      const dup = Store.data.insumoItens.find(x => x.id !== i.id && nomeChave(x.nome) === nomeChave(nome));
+      if (dup) { toast('Já existe um insumo com esse nome', 'err'); return false; }
+      const rec = { ...i, id: i.id || uid(), nome, unidade: fd.unidade, custo: r2(fd.custo), estoqueMin: num(fd.estoqueMin) || '', ativo: fd.ativo, criadoEm: i.criadoEm || agora() };
+      const ops = [up('insumoItens', rec)];
+      if (novo && num(fd.qtdIni) > 0) ops.push(up('insumoMovs', { id: uid(), data: hoje(), insumoId: rec.id, tipo: 'entrada', quantidade: num(fd.qtdIni), custoUnit: rec.custo, origem: 'manual', origemId: '', obs: 'Quantidade inicial', criadoEm: agora() }));
+      Store.commit(ops); toast(novo ? 'Insumo cadastrado' : 'Insumo atualizado', 'ok');
+    },
+  });
+}
+function formEntradaInsumo() {
+  const itens = Store.data.insumoItens.filter(i => i.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
+  if (!itens.length) return toast('Cadastre um insumo primeiro', 'err');
+  Modal.open({
+    title: 'Lançar entrada / saída de insumo', small: true,
+    body: `<div class="grid g2">
+      ${field('Insumo *', `<select name="insumoId" required>${opt(itens.map(i => [i.id, i.nome]), '', 'Selecione…')}</select>`, 'span2')}
+      ${field('Tipo', `<select name="tipo">${opt([['entrada', 'Entrada (+)'], ['saida', 'Saída / perda (−)']], 'entrada')}</select>`)}
+      ${field('Quantidade *', inp('quantidade', '', 'inputmode="decimal" required'))}
+      ${field('Data', inp('data', hoje(), 'type="date"'))}
+      ${field('Custo por unidade (R$)', inp('custoUnit', '', 'inputmode="decimal" placeholder="opcional"'))}
+      ${field('Observação', inp('obs', '', 'placeholder="ex.: doação, avaria…"'), 'span2')}
+    </div><p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">Compras de insumos marcadas como Recebido já entram sozinhas no estoque.</p>`,
+    onSubmit: fd => {
+      if (!(num(fd.quantidade) > 0)) { toast('Informe a quantidade', 'err'); return false; }
+      Store.commit([up('insumoMovs', { id: uid(), data: fd.data || hoje(), insumoId: fd.insumoId, tipo: fd.tipo, quantidade: num(fd.quantidade), custoUnit: r2(fd.custoUnit), origem: 'manual', origemId: '', obs: fd.obs, criadoEm: agora() })]);
+      toast('Movimentação lançada', 'ok');
+    },
+  });
+}
+/* Balanço: contagem → consumo do período (esperado − contado) → custo ÷ pedidos = custo de insumos por pedido */
+function formBalancoInsumos() {
+  const itens = Store.data.insumoItens.filter(i => i.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
+  if (!itens.length) return toast('Cadastre os insumos primeiro (botão “Novo insumo”)', 'err');
+  const sal = saldosInsumos(), ant = ultimoBalInsumo();
+  Modal.open({
+    title: ant ? 'Balanço mensal de insumos' : 'Primeiro balanço — quantidades atuais', submit: 'Finalizar balanço',
+    body: `<div id="biWrap"><p class="muted" style="margin:0 0 12px;font-weight:700">${ant ? `Conte o que vocês têm de cada insumo hoje. O sistema calcula quanto foi <b>usado desde o último balanço (${dataBR(ant.data)})</b>, o custo desse consumo e o <b>custo de insumos por pedido</b>.` : 'Informe a quantidade que vocês têm hoje de cada insumo. Este é o ponto de partida: a partir do próximo balanço o sistema calcula o custo de insumos por pedido.'} Deixe em branco o que não contou (mantém o saldo do sistema).</p>
+      <div class="grid g2" style="margin-bottom:12px">${field('Data do balanço', inp('data', hoje(), 'type="date" id="biData"'))}</div>
+      <div class="items"><table><thead><tr><th>Insumo</th><th class="r">No sistema</th><th class="r">Contado</th>${ant ? '<th class="r">Usado</th><th class="r">Custo</th>' : ''}</tr></thead><tbody>
+      ${itens.map(i => `<tr data-bi="${i.id}"><td class="wrap">${esc(i.nome)} <span class="muted">${esc(i.unidade || '')}</span></td><td class="r">${qtdFmt(sal[i.id] || 0)}</td><td class="c-qtd"><input name="q_${i.id}" inputmode="decimal"></td>${ant ? '<td class="r bi-uso"></td><td class="r bi-custo"></td>' : ''}</tr>`).join('')}
+      </tbody></table></div><div class="bal-res" id="biRes"></div></div>`,
+    onOpen: body => {
+      const upd = () => {
+        if (!ant) return;
+        const de = ant.data, ate = $('#biData').value || hoje();
+        let tot = 0;
+        $$('tr[data-bi]', body).forEach(tr => {
+          const id = tr.dataset.bi, v = $('input', tr).value.trim(), cont = v === '' ? (sal[id] || 0) : num(v), uso = (sal[id] || 0) - cont, c = uso * custoInsumo(id);
+          tot += c; $('.bi-uso', tr).innerHTML = v === '' ? '' : `<b class="${uso < 0 ? 'pos' : ''}">${qtdFmt(uso)}</b>`; $('.bi-custo', tr).textContent = v === '' ? '' : brl(c);
+        });
+        const n = pedidosNoPeriodo(de, ate);
+        $('#biRes', body).innerHTML = `<span>Consumo desde ${dataBR(de)}: <b>${brl(tot)}</b></span><span>Pedidos no período: <b>${n}</b></span><span>Custo por pedido: <b class="pos">${n ? brl(tot / n) : '—'}</b></span>`;
+      };
+      $('#biWrap', body).addEventListener('input', upd); upd();
+    },
+    onSubmit: fd => {
+      const data = fd.data || hoje();
+      if (ant && data < ant.data) { toast('A data não pode ser anterior ao último balanço', 'err'); return false; }
+      const linhas = itens.map(i => { const v = String(fd['q_' + i.id] ?? '').trim(), esp = sal[i.id] || 0, cont = v === '' ? esp : num(v), cu = custoInsumo(i.id); return { insumoId: i.id, nome: i.nome, esperado: esp, contado: cont, usado: ant ? esp - cont : 0, custoUnit: cu, custo: ant ? r2((esp - cont) * cu) : 0 }; });
+      const custoTotal = r2(linhas.reduce((t, l) => t + l.custo, 0));
+      const pedidos = ant ? pedidosNoPeriodo(ant.data, data) : '';
+      const b = { id: uid(), data, itens: linhas, pedidos, custoTotal: ant ? custoTotal : 0, custoPedido: ant && pedidos ? r2(custoTotal / pedidos) : '', obs: '', criadoEm: agora() };
+      Store.commit([up('insumoBals', b)]);
+      toast(ant ? (pedidos ? `Balanço salvo — custo de insumos: ${brl(b.custoPedido)} por pedido` : 'Balanço salvo (nenhum pedido no período)') : 'Quantidades iniciais salvas', 'ok');
+    },
+  });
+}
+function verBalancoInsumos(b) {
+  if (!b) return;
+  Modal.open({
+    title: 'Balanço de insumos — ' + dataBR(b.data),
+    body: `${b.pedidos === '' || b.pedidos == null ? '<div class="note">Balanço inicial (ponto de partida).</div>' : `<div class="hist-kpis"><div><span>Consumo</span><b>${brl(b.custoTotal)}</b></div><div><span>Pedidos no período</span><b>${num(b.pedidos)}</b></div><div><span>Custo por pedido</span><b>${num(b.pedidos) ? brl(b.custoPedido) : '—'}</b></div><div><span>Itens contados</span><b>${(b.itens || []).length}</b></div></div>`}
+      <div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line);margin-top:12px"><table><thead><tr><th>Insumo</th><th class="r">No sistema</th><th class="r">Contado</th><th class="r">Usado</th><th class="r">Custo un.</th><th class="r">Custo</th></tr></thead><tbody>
+      ${(b.itens || []).map(i => `<tr><td class="wrap">${esc(insumoItem(i.insumoId)?.nome || i.nome)}</td><td class="r">${qtdFmt(i.esperado)}</td><td class="r strong">${qtdFmt(i.contado)}</td><td class="r">${qtdFmt(i.usado)}</td><td class="r">${brl(i.custoUnit)}</td><td class="r">${brl(i.custo)}</td></tr>`).join('')}
+      </tbody></table></div>`,
+  });
+}
+
 function viewInsumos(el) {
   actions(`<button class="btn accent" id="novoIns">${ICON.plus}Nova compra de insumos</button>`);
   const q = UI.qIns || '', st = UI.stIns || '', mes = UI.mIns ?? '';
@@ -3410,7 +3586,7 @@ function viewInsumos(el) {
     .sort((a, b) => (b.data || '').localeCompare(a.data || '') || num(b.numero) - num(a.numero));
   const tot = lista.filter(p => p.status !== 'Cancelado').reduce((s, p) => s + num(p.total), 0);
   el.innerHTML = `
-    <div class="note" style="margin:0 0 14px">Compras de materiais para <b>embalar, separar e enviar</b> pedidos (caixas, sacos, fitas, etiquetas…). Não entram no estoque de produtos — geram só as <b>contas a pagar</b>.</div>
+    <div class="note" style="margin:0 0 14px">Compras de materiais para <b>embalar, separar e enviar</b> pedidos (caixas, sacos, fitas, etiquetas…). Geram as <b>contas a pagar</b> e, ao marcar <b>Recebido</b>, entram no estoque de <a href="#/estoque-insumos">Insumos</a> (não no estoque de produtos).</div>
     <div class="toolbar">
       ${searchBox('qIns', q, 'Buscar por nº, fornecedor ou item…')}
       <input type="month" id="mIns" value="${esc(mes)}" title="Filtrar por mês">
@@ -3436,7 +3612,7 @@ function viewInsumos(el) {
   const find = id => Store.data.insumos.find(p => p.id === id);
   $('#novoIns').onclick = () => formInsumo();
   $$('[data-edit]', el).forEach(b => b.onclick = () => formInsumo(find(b.dataset.edit)));
-  $$('[data-rec]', el).forEach(b => b.onclick = () => { const p = find(b.dataset.rec); Store.commit([up('insumos', { ...p, status: 'Recebido' })]).then(() => toast('Marcado como recebido', 'ok')); });
+  $$('[data-rec]', el).forEach(b => b.onclick = () => { const p = find(b.dataset.rec), novo = { ...p, status: 'Recebido' }; Store.commit([up('insumos', novo), ...opsEstoqueInsumo(novo)]).then(() => toast('Recebido: insumos entraram no estoque', 'ok')); });
   $$('[data-cancel]', el).forEach(b => b.onclick = () => {
     const p = find(b.dataset.cancel), novo = { ...p, status: 'Cancelado' };
     const pagas = Store.data.pagar.filter(r => r.origemId === p.id && r.status === 'Pago');
@@ -3450,7 +3626,7 @@ function formInsumo(p) {
   const numeroPrevisto = novo ? proxNumero(Store.data.insumos) : p.numero;
   const forn = contato(p.fornecedorId);
   const formas = FORMAS_COMPRA.includes(p.formaPgto) ? FORMAS_COMPRA : [...FORMAS_COMPRA, p.formaPgto];
-  const descs = [...new Set(Store.data.insumos.flatMap(x => (x.itens || []).map(i => i.descricao)).filter(Boolean))].sort();
+  const descs = [...new Set([...Store.data.insumoItens.map(x => x.nome), ...Store.data.insumos.flatMap(x => (x.itens || []).map(i => i.descricao))].filter(Boolean))].sort();
   Modal.open({
     title: novo ? 'Nova compra de insumos' : `Compra de insumos nº ${p.numero}`,
     submit: 'Salvar compra',
@@ -3587,6 +3763,16 @@ function migracaoV19() {
     const itens = v.itens.map(i => ({ ...i, valor: num(produto(i.produtoId)?.custo) }));
     const nv = { ...v, itens, desconto: 0, total: totalItens(itens), comissao: 0, comissaoPct: 0, formaPgto: '', parcelas: 1 };
     add(up('vendas', nv)); efeitosVenda(nv).forEach(add);
+  }
+  // v24: cadastra os insumos a partir da compra de insumos nº 1 (uma vez)
+  if (!Store.data.insumoItens.length) {
+    const c1 = Store.data.insumos.find(x => String(x.numero) === '1' && x.status !== 'Cancelado');
+    const vistos = {};
+    for (const it of c1?.itens || []) {
+      const nome = String(it.descricao || '').trim(); if (!nome || vistos[nomeChave(nome)]) continue;
+      vistos[nomeChave(nome)] = 1;
+      add(up('insumoItens', { id: uid(), nome, unidade: it.un || 'UN', custo: r2(it.valor), estoqueMin: '', ativo: 'sim', criadoEm: agora() }));
+    }
   }
   // v22.2: acerta custos lançados antes do custo médio (1x por aparelho; o cálculo é o mesmo em qualquer aparelho)
   let rc = ''; try { rc = localStorage.getItem('cheel_erp_recalc') || ''; } catch (e) {}

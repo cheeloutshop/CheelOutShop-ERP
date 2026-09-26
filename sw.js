@@ -1,7 +1,7 @@
 /* Cheel Out Shop ERP — service worker
    Guarda os arquivos do site no aparelho: o sistema abre na hora (mesmo com internet lenta).
    Os dados NÃO passam por aqui: continuam indo direto para a planilha. */
-const CACHE = 'cheel-erp-v23';
+const CACHE = 'cheel-erp-v24';
 const BASE = ['./', './index.html', './logo.webp', './manifest.webmanifest', './favicon-32.png', './icon-192.png'];
 
 self.addEventListener('install', e => {
