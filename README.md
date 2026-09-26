@@ -117,6 +117,15 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Sorteio** (nova plataforma): baixa o estoque a custo, com a identificação do sorteio, e aparece no Painel como **custo do mês**, separado.
 - **Atualize o script da planilha** (nova versão da implantação). As colunas novas são criadas sozinhas.
 
+## v20 — custo médio ponderado
+
+- O custo do produto passa a ser o **custo médio ponderado** do estoque (compra nova entra na média com o estoque que já existe). Cada venda grava o custo médio do dia.
+- **Controle de estoque › Ajustar custos**: informe o custo real das unidades que já estão em estoque.
+- Quando uma compra chega com custo maior, o sistema **sugere um preço novo** (mantendo o markup que o produto tinha) e avisa no Painel — você aplica ou mantém.
+- Pedido de compra com colunas **Custo un.** e **Un. + frete**, e a comparação com o último custo e o preço de venda.
+- **Histórico do produto** (ícone de relógio em Produtos): entradas por fornecedor e vendas com custo médio, lucro e markup.
+- **Atualize o script da planilha** (nova versão da implantação): coluna nova `precoSugerido`, criada sozinha.
+
 ## Como os dados se ligam
 
 ```
