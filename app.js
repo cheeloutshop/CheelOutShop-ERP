@@ -17,7 +17,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '19';
+const APP_VERSAO = '19.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -710,8 +710,8 @@ function viewProdutos(el) {
           <td class="muted">${esc(p.sku)}</td>
           <td class="wrap strong">${esc(p.nome)} ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
           <td>${esc(p.categoria)}</td>
-          <td class="r">${brl(p.custo)}</td><td class="r strong">${brl(p.preco)}</td>
-          <td class="r ${mg < 0 ? 'neg' : ''}">${mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%</td>
+          <td class="r">${brl(p.custo)}</td><td class="r strong">${num(p.preco) ? brl(p.preco) : '<span class="muted">—</span>'}</td>
+          <td class="r ${mg < 0 ? 'neg' : ''}">${num(p.preco) ? mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%' : '<span class="muted">—</span>'}</td>
           <td class="r"><span class="badge ${s <= 0 ? 'red' : (num(p.estoqueMin) && s <= num(p.estoqueMin) ? 'amber' : 'green')}">${qtdFmt(s)} ${esc(p.unidade || 'un')}</span></td>
           <td class="act"><span class="inner"><button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button></span></td>
         </tr>`;
@@ -746,7 +746,7 @@ function formProduto(p) {
         ${field('Unidade', `<select name="unidade">${opt(['un', 'cx', 'kg', 'g', 'L', 'm', 'par', 'kit', 'pct'], p.unidade)}</select>`)}
         ${field('Custo (R$)', inp('custo', dec(p.custo), 'inputmode="decimal" placeholder="0,00" id="pCusto"'))}
         ${field('Markup (%)', '<input id="pMarkup" inputmode="decimal" placeholder="ex.: 50" autocomplete="off">')}
-        ${field('Preço de venda (R$) *', inp('preco', dec(p.preco), 'inputmode="decimal" placeholder="0,00" required id="pPreco"'))}
+        ${field('Preço de venda (R$)', inp('preco', dec(p.preco), 'inputmode="decimal" placeholder="opcional" id="pPreco"'))}
         ${field('Estoque mínimo', inp('estoqueMin', p.estoqueMin, 'inputmode="decimal" placeholder="0"'))}
         ${field('EAN / código de barras', inp('ean', p.ean))}
         ${field('NCM', inp('ncm', p.ncm))}
@@ -755,9 +755,18 @@ function formProduto(p) {
       <div class="note" id="pMargem"></div>
       <div class="section-t">Consignação (produto de terceiro)</div>
       <div class="grid g4">
-        ${field('Dono do produto', `<select name="consigId" id="pConsig">${opt(consignantes().map(c => [c.id, c.nome]), p.consigId, 'Produto próprio (não é consignado)')}</select>`, 'span2')}
+        ${field('Dono do produto', `<select name="consigId" id="pConsig">${opt(consignantes().map(c => [c.id, c.nome]), p.consigId, 'Produto próprio (não é consignado)')}<option value="__novo__">➕ Cadastrar novo consignante</option></select>`, 'span2')}
         ${field('Imposto (%)', inp('consigImposto', String(p.consigImposto ?? '') !== '' ? fmtPct(num(p.consigImposto)) : '', 'inputmode="decimal" id="pCImp" placeholder="do cadastro"'))}
         ${field('Comissão (%)', inp('consigComissao', String(p.consigComissao ?? '') !== '' ? fmtPct(num(p.consigComissao)) : '', 'inputmode="decimal" id="pCCom" placeholder="do cadastro"'))}
+      </div>
+      <div class="inline-new" id="pNovoCons" hidden>
+        <div class="inline-head"><b>Novo consignante</b><span class="muted">dono dos produtos e taxas combinadas</span></div>
+        <div class="grid g4">
+          ${field('Nome *', '<input data-cs="nome" autocomplete="off" placeholder="Nome de quem deixou os produtos">', 'span2')}
+          ${field('Imposto (%)', '<input data-cs="imp" inputmode="decimal" value="4">')}
+          ${field('Comissão da loja (%)', '<input data-cs="com" inputmode="decimal" value="5">')}
+        </div>
+        <div class="inline-actions"><button type="button" class="btn ghost sm" data-cs-cancel>Cancelar</button><button type="button" class="btn primary sm" data-cs-save>Salvar consignante</button></div>
       </div>
       <div class="note consig-note" id="pConsigInfo"></div>
       ${novo ? `<div class="section-t">Estoque inicial (opcional)</div><div class="grid g4">${field('Quantidade inicial', inp('estoqueIni', '', 'inputmode="decimal" placeholder="0"'))}</div>` : ''}`,
@@ -766,6 +775,17 @@ function formProduto(p) {
       ligarMarkup($('#pCusto'), $('#pMarkup'), $('#pPreco'));
       ['#pCusto', '#pPreco', '#pMarkup'].forEach(s => $(s).addEventListener('input', upd)); upd();
       fotoCampo = campoFoto($('#pFoto', body), p.foto || '', () => $('[name=nome]', body).value);
+      const pnlCs = $('#pNovoCons', body);
+      const fecharCs = sel => { pnlCs.hidden = true; const s = $('#pConsig'); s.innerHTML = opt(consignantes().map(c => [c.id, c.nome]), sel, 'Produto próprio (não é consignado)') + '<option value="__novo__">➕ Cadastrar novo consignante</option>'; s.value = sel || ''; cons(); };
+      $('#pConsig').addEventListener('change', () => { if ($('#pConsig').value === '__novo__') { $('#pConsig').value = ''; pnlCs.hidden = false; setTimeout(() => $('[data-cs=nome]', pnlCs).focus(), 30); cons(); } });
+      $('[data-cs-cancel]', pnlCs).onclick = () => fecharCs($('#pConsig').value);
+      $('[data-cs-save]', pnlCs).onclick = () => {
+        const nome = $('[data-cs=nome]', pnlCs).value.trim();
+        if (!nome) { toast('Informe o nome do dono dos produtos', 'err'); return; }
+        const c = { id: uid(), tipo: 'Fornecedor', nome, documento: '', telefone: '', email: '', cidade: '', uf: '', obs: 'Consignante (produtos em consignação)', criadoEm: agora(), fantasia: '', cep: '', endereco: '', nick: '', consignante: 'sim', consigImposto: num($('[data-cs=imp]', pnlCs).value), consigComissao: num($('[data-cs=com]', pnlCs).value) };
+        Store.commit([up('contatos', c)]); toast('Consignante cadastrado', 'ok'); fecharCs(c.id);
+      };
+      pnlCs.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('[data-cs-save]', pnlCs).click(); } });
       const cons = () => {
         const dono = contato($('#pConsig').value), box = $('#pConsigInfo', body);
         $('#pCImp').disabled = $('#pCCom').disabled = !dono;
@@ -788,7 +808,8 @@ function formProduto(p) {
       if (sku && Store.data.produtos.some(x => x.sku === sku && x.id !== p.id)) { toast('Já existe um produto com esse SKU', 'err'); return false; }
       const rec = { ...p, id: p.id || uid(), nome: fd.nome.trim(), sku, categoria: fd.categoria.trim(), unidade: fd.unidade, custo: r2(fd.custo), preco: r2(fd.preco), estoqueMin: num(fd.estoqueMin), ean: fd.ean.trim(), ncm: fd.ncm.trim(), ativo: fd.ativo, criadoEm: p.criadoEm || agora() };
       rec.foto = fotoCampo ? fotoCampo.valor() : (p.foto || '');
-      rec.consigId = fd.consigId || '';
+      if (!$('#pNovoCons').hidden && $('#pNovoCons [data-cs=nome]').value.trim()) { toast('Termine o cadastro do consignante (Salvar consignante) ou clique em Cancelar', 'err'); return false; }
+      rec.consigId = fd.consigId && fd.consigId !== '__novo__' ? fd.consigId : '';
       rec.consigImposto = rec.consigId && String(fd.consigImposto || '').trim() !== '' ? num(fd.consigImposto) : '';
       rec.consigComissao = rec.consigId && String(fd.consigComissao || '').trim() !== '' ? num(fd.consigComissao) : '';
       if (rec.consigId) rec.custo = 0;
