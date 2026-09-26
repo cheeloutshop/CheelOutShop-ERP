@@ -588,3 +588,13 @@ td.c-foto { width: 56px; }
 @media (max-width: 900px) { .fc-int { grid-template-columns: 1fr; } }
 .plat-resumo .card.interna { background: #FAFBFD; border: 1.5px dashed #D5DCEA; box-shadow: none; }
 .plat-resumo .card.interna b { color: var(--ink-3); }
+
+/* ---------- v19.2 ---------- */
+.prod-kpis { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.neg-alerta { display: grid; grid-template-columns: minmax(220px, 1.2fr) 2fr auto; gap: 10px 20px; align-items: center; background: var(--red-bg); border: 1.5px solid #F3C4C4; border-left: 6px solid var(--red); border-radius: var(--radius); padding: 14px 18px; margin-bottom: 16px; }
+.neg-alerta > div { display: flex; flex-direction: column; gap: 2px; }
+.neg-alerta > div b { color: var(--red); font-size: 15px; }
+.neg-alerta > div span { font-size: 12.5px; font-weight: 700; color: var(--ink-2); }
+.neg-alerta ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; font-weight: 700; }
+.neg-alerta ul b { color: var(--red); }
+@media (max-width: 760px) { .neg-alerta { grid-template-columns: 1fr; } }

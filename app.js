@@ -17,7 +17,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '19.1';
+const APP_VERSAO = '19.2';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -329,6 +329,10 @@ function efeitosVenda(v) {
   return ops;
 }
 const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+/* nome de produto repetido (ignora maiúsculas, acentos e espaços extras) */
+const nomeChave = s => norm(s).replace(/\s+/g, ' ').trim();
+const produtoComNome = (nome, ignorarId) => nomeChave(nome) ? Store.data.produtos.find(x => x.id !== ignorarId && nomeChave(x.nome) === nomeChave(nome)) : null;
+const msgNomeDup = x => `Já existe um produto com esse nome: “${x.nome}”${x.sku ? ' (' + x.sku + ')' : ''}${x.ativo === 'nao' ? ' — está inativo' : ''}`;
 /* Retirada (pró-labore dos sócios em produtos) e Sorteio: só baixam o estoque, a custo. Não são venda. */
 const ehCanalInterno = c => /^(retirada|sorteio)$/i.test(String(c || '').trim());
 const ehSorteio = c => /^sorteio$/i.test(String(c || '').trim());
@@ -552,7 +556,13 @@ function viewPainel(el) {
   const somaP = proximas.filter(c => c._t === 'pagar').reduce((s, c) => s + num(c.valor), 0);
   const somaR = proximas.filter(c => c._t === 'receber').reduce((s, c) => s + num(c.valor), 0);
 
-  el.innerHTML = barraJamble(true) + `
+  const negativos = d.produtos.filter(p => (sal[p.id] || 0) < 0).sort((a, b) => (sal[a.id] || 0) - (sal[b.id] || 0));
+  const alertaNeg = negativos.length ? `<div class="neg-alerta">
+      <div><b>⚠ ${negativos.length} produto(s) com estoque negativo</b><span>Foi vendido mais do que o sistema tem em estoque. Lance a entrada (pedido de compra ou balanço) para corrigir.</span></div>
+      <ul>${negativos.slice(0, 6).map(p => `<li>${esc(p.nome)} <b>${qtdFmt(sal[p.id])} ${esc(p.unidade || 'un')}</b></li>`).join('')}${negativos.length > 6 ? `<li class="muted">e mais ${negativos.length - 6}…</li>` : ''}</ul>
+      <a class="btn ghost sm" href="#/estoque" data-negativo>Ver no estoque</a>
+    </div>` : '';
+  el.innerHTML = alertaNeg + barraJamble(true) + `
     <div class="kpis">
       <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${comissoesMes(mes) ? ` · comissões <span class="neg">${brl(comissoesMes(mes))}</span>` : ''}</div></div>
       <div class="card kpi green"><div class="lbl">A receber (em aberto)</div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
@@ -596,6 +606,7 @@ function viewPainel(el) {
     ${fluxoCaixaHTML(valorEst)}`;
   $('#novaVendaTop').onclick = () => formVenda();
   $('#impEtqTop').onclick = abrirImportarEtiquetas;
+  $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
   ligarBarraJamble(el);
   const fcm = $('#fcMes', el); if (fcm) fcm.onchange = e => { UI.fcMes = e.target.value || mesAtual(); render(); };
   $$('[data-fv]', el).forEach(b => b.onclick = () => { UI.fVenc = b.dataset.fv; render(); });
@@ -695,7 +706,14 @@ function viewProdutos(el) {
     .filter(p => !UI.catProd || p.categoria === UI.catProd)
     .filter(p => match(q, p.nome, p.sku, p.ean, p.categoria))
     .sort((a, b) => a.nome.localeCompare(b.nome));
+  const todos = Store.data.produtos, ativosP = todos.filter(x => x.ativo !== 'nao');
+  const comEst = ativosP.filter(x => (sal[x.id] || 0) > 0), negP = todos.filter(x => (sal[x.id] || 0) < 0);
   el.innerHTML = `
+    <div class="kpis prod-kpis">
+      <div class="card kpi blue"><div class="lbl">Produtos cadastrados</div><div class="val">${todos.length}</div><div class="hint">${ativosP.length} ativo(s) · ${todos.length - ativosP.length} inativo(s)</div></div>
+      <div class="card kpi green"><div class="lbl">Ativos com estoque</div><div class="val">${comEst.length}</div><div class="hint">${ativosP.length - comEst.length} ativo(s) sem estoque</div></div>
+      ${negP.length ? `<div class="card kpi red"><div class="lbl">Estoque negativo</div><div class="val">${negP.length}</div><div class="hint"><a href="#/estoque" data-negativo>ver produtos</a></div></div>` : ''}
+    </div>
     <div class="toolbar">
       ${searchBox('qProd', q, 'Buscar por nome, SKU, EAN…')}
       <select id="catProd">${opt(cats, UI.catProd, 'Todas as categorias')}</select>
@@ -721,6 +739,7 @@ function viewProdutos(el) {
   $('#catProd').onchange = e => { UI.catProd = e.target.value; render(); };
   $$('[data-f]', el).forEach(b => b.onclick = () => { UI.fProd = b.dataset.f; render(); });
   $('#novoProd').onclick = () => formProduto();
+  $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
   $$('[data-edit]', el).forEach(b => b.onclick = () => formProduto(produto(b.dataset.edit)));
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const p = produto(b.dataset.del);
@@ -752,6 +771,7 @@ function formProduto(p) {
         ${field('NCM', inp('ncm', p.ncm))}
         ${field('Situação', `<select name="ativo">${opt([['sim', 'Ativo'], ['nao', 'Inativo']], p.ativo)}</select>`)}
       </div></div>
+      <div class="note warn" id="pNomeDup" hidden></div>
       <div class="note" id="pMargem"></div>
       <div class="section-t">Consignação (produto de terceiro)</div>
       <div class="grid g4">
@@ -775,6 +795,8 @@ function formProduto(p) {
       ligarMarkup($('#pCusto'), $('#pMarkup'), $('#pPreco'));
       ['#pCusto', '#pPreco', '#pMarkup'].forEach(s => $(s).addEventListener('input', upd)); upd();
       fotoCampo = campoFoto($('#pFoto', body), p.foto || '', () => $('[name=nome]', body).value);
+      const avisaDup = () => { const d = produtoComNome($('[name=nome]', body).value, p.id), bx = $('#pNomeDup', body); bx.hidden = !d; if (d) bx.textContent = msgNomeDup(d) + '. Use outro nome ou edite o produto existente.'; };
+      $('[name=nome]', body).addEventListener('input', avisaDup);
       const pnlCs = $('#pNovoCons', body);
       const fecharCs = sel => { pnlCs.hidden = true; const s = $('#pConsig'); s.innerHTML = opt(consignantes().map(c => [c.id, c.nome]), sel, 'Produto próprio (não é consignado)') + '<option value="__novo__">➕ Cadastrar novo consignante</option>'; s.value = sel || ''; cons(); };
       $('#pConsig').addEventListener('change', () => { if ($('#pConsig').value === '__novo__') { $('#pConsig').value = ''; pnlCs.hidden = false; setTimeout(() => $('[data-cs=nome]', pnlCs).focus(), 30); cons(); } });
@@ -806,6 +828,7 @@ function formProduto(p) {
       if (fotoCampo && fotoCampo.ocupado()) { toast('Aguarde a foto terminar de carregar', 'err'); return false; }
       const sku = fd.sku.trim();
       if (sku && Store.data.produtos.some(x => x.sku === sku && x.id !== p.id)) { toast('Já existe um produto com esse SKU', 'err'); return false; }
+      const dupN = produtoComNome(fd.nome, p.id); if (dupN) { toast(msgNomeDup(dupN), 'err'); $('[name=nome]').focus(); return false; }
       const rec = { ...p, id: p.id || uid(), nome: fd.nome.trim(), sku, categoria: fd.categoria.trim(), unidade: fd.unidade, custo: r2(fd.custo), preco: r2(fd.preco), estoqueMin: num(fd.estoqueMin), ean: fd.ean.trim(), ncm: fd.ncm.trim(), ativo: fd.ativo, criadoEm: p.criadoEm || agora() };
       rec.foto = fotoCampo ? fotoCampo.valor() : (p.foto || '');
       if (!$('#pNovoCons').hidden && $('#pNovoCons [data-cs=nome]').value.trim()) { toast('Termine o cadastro do consignante (Salvar consignante) ou clique em Cancelar', 'err'); return false; }
@@ -833,19 +856,19 @@ function viewEstoque(el) {
   if (tab === 'saldos') {
     const f = UI.fEst || 'todos';
     const lista = Store.data.produtos.filter(p => p.ativo !== 'nao').filter(p => match(q, p.nome, p.sku, p.categoria))
-      .filter(p => { const s = sal[p.id] || 0; return f === 'todos' || (f === 'baixo' ? num(p.estoqueMin) > 0 && s <= num(p.estoqueMin) : f === 'zerado' ? s <= 0 : true); })
+      .filter(p => { const s = sal[p.id] || 0; return f === 'todos' || (f === 'baixo' ? num(p.estoqueMin) > 0 && s <= num(p.estoqueMin) : f === 'zerado' ? s <= 0 : f === 'negativo' ? s < 0 : true); })
       .sort((a, b) => a.nome.localeCompare(b.nome));
     const totQ = lista.reduce((s, p) => s + (sal[p.id] || 0), 0);
     const totV = lista.reduce((s, p) => s + Math.max(0, sal[p.id] || 0) * num(p.custo), 0);
     const totVV = lista.reduce((s, p) => s + Math.max(0, sal[p.id] || 0) * num(p.preco), 0);
     html += `
       <div class="toolbar">${searchBox('qEst', q, 'Buscar produto…')}
-        <div class="chips">${[['todos', 'Todos'], ['baixo', 'Abaixo do mínimo'], ['zerado', 'Sem estoque']].map(([k, t]) => `<button class="chip ${f === k ? 'on' : ''}" data-f="${k}">${t}</button>`).join('')}</div></div>
+        <div class="chips">${[['todos', 'Todos'], ['baixo', 'Abaixo do mínimo'], ['zerado', 'Sem estoque'], ['negativo', 'Negativo']].map(([k, t]) => `<button class="chip ${f === k ? 'on' : ''}" data-f="${k}">${t}</button>`).join('')}</div></div>
       <div class="table-wrap"><table>
         <thead><tr><th>SKU</th><th>Produto</th><th class="r">Saldo</th><th class="r">Mínimo</th><th class="r">Custo unit.</th><th class="r">Valor (custo)</th><th class="r">Valor (venda)</th><th>Situação</th><th></th></tr></thead>
         <tbody>${lista.length ? lista.map(p => {
           const s = sal[p.id] || 0, mn = num(p.estoqueMin);
-          const st = s <= 0 ? '<span class="badge red">Sem estoque</span>' : mn && s <= mn ? '<span class="badge amber">Repor</span>' : '<span class="badge green">OK</span>';
+          const st = s < 0 ? '<span class="badge red">Negativo</span>' : s <= 0 ? '<span class="badge red">Sem estoque</span>' : mn && s <= mn ? '<span class="badge amber">Repor</span>' : '<span class="badge green">OK</span>';
           return `<tr><td class="muted">${esc(p.sku)}</td><td class="wrap strong">${esc(p.nome)}</td><td class="r strong">${qtdFmt(s)} ${esc(p.unidade || 'un')}</td><td class="r muted">${qtdFmt(mn)}</td><td class="r">${brl(p.custo)}</td><td class="r">${brl(Math.max(0, s) * num(p.custo))}</td><td class="r">${brl(Math.max(0, s) * num(p.preco))}</td><td>${st}</td>
             <td class="act"><button class="btn ghost sm" data-mov="${p.id}">Movimentar</button></td></tr>`;
         }).join('') : emptyRow(9, 'Nenhum produto')}</tbody>
@@ -1295,6 +1318,7 @@ function formPedido(tipo, p) {
         if (V && !num(g('preco'))) { toast('Informe o preço de venda', 'err'); $('[data-np=preco]', pnlP).focus(); return; }
         if (!V && !num(g('custo'))) { toast('Informe o custo do produto', 'err'); $('[data-np=custo]', pnlP).focus(); return; }
         if (g('sku') && Store.data.produtos.some(x => x.sku === g('sku'))) { toast('Já existe um produto com esse SKU', 'err'); return; }
+        { const dupN = produtoComNome(g('nome')); if (dupN) { toast(msgNomeDup(dupN) + ' — escolha-o na lista', 'err'); return; } }
         const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: g('unidade') || 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora() };
         Store.commit([up('produtos', pr)]);
         // atualiza as listas de produto de todas as linhas, mantendo o que já estava escolhido
@@ -1740,6 +1764,7 @@ function formCompra(p) {
         const g = k => $(`[data-np=${k}]`, pnlP).value.trim();
         if (!g('nome')) { toast('Informe o nome do produto', 'err'); $('[data-np=nome]', pnlP).focus(); return; }
         if (g('sku') && Store.data.produtos.some(x => x.sku === g('sku'))) { toast('Já existe um produto com esse SKU', 'err'); return; }
+        { const dupN = produtoComNome(g('nome')); if (dupN) { toast(msgNomeDup(dupN) + ' — escolha-o na lista', 'err'); return; } }
         const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora() };
         Store.commit([up('produtos', pr)]);
         $$('[data-i=prod]', tb).forEach(s => { const v = s.value; s.innerHTML = prodOptionsPedido(v === NOVO_PROD ? '' : v); });
@@ -2410,6 +2435,7 @@ function abrirPDV(v) {
         if (!num(g('preco'))) { toast('Informe o preço de venda', 'err'); $('[data-np=preco]', pnlP).focus(); return; }
         if (fotoNova && fotoNova.ocupado()) { toast('Aguarde a foto terminar de carregar', 'err'); return; }
         if (g('sku') && Store.data.produtos.some(x => x.sku === g('sku'))) { toast('Já existe um produto com esse SKU', 'err'); return; }
+        { const dupN = produtoComNome(g('nome')); if (dupN) { toast(msgNomeDup(dupN) + ' — escolha-o na lista', 'err'); return; } }
         const pr = { id: uid(), sku: g('sku'), nome: g('nome'), categoria: g('categoria'), unidade: 'un', custo: r2(g('custo')), preco: r2(g('preco')), estoqueMin: num(g('estoqueMin')), ean: '', ncm: '', ativo: 'sim', criadoEm: agora(), foto: fotoNova ? fotoNova.valor() : '' };
         Store.commit([up('produtos', pr)]);
         pnlP.hidden = true; prodTxt.value = pr.nome; escolher(pr);
@@ -2858,14 +2884,16 @@ function formConfirmarVenda(v) {
       for (const l of linhas) {
         const i = itens[l.k];
         if (l.sel === '__novo__') {
-          const chave = norm(i.descricao);
-          if (!novos[chave]) {
+          const chave = nomeChave(i.descricao);
+          const existente = produtoComNome(i.descricao);
+          if (existente) i.produtoId = existente.id;
+          else if (!novos[chave]) {
             let n = Store.data.produtos.length + Object.keys(novos).length + 1, sku;
             do { sku = 'CH' + String(n++).padStart(4, '0'); } while (Store.data.produtos.some(x => x.sku === sku));
             novos[chave] = { id: uid(), sku, nome: i.descricao, categoria: '', unidade: 'un', custo: 0, preco: i.valor, estoqueMin: 0, ean: '', ncm: '', ativo: 'sim', criadoEm: agora(), foto: '', apelidos: '' };
             ops.push(up('produtos', novos[chave]));
           }
-          i.produtoId = novos[chave].id;
+          if (!existente) i.produtoId = novos[chave].id;
         } else {
           i.produtoId = l.sel;
           if (l.lembrar) { const np = comApelido(produto(l.sel), i.descricao); if (np) ops.push(up('produtos', np)); }
