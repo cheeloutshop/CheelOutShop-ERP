@@ -45,7 +45,7 @@ Um sistema de gestão parecido com o Bling, feito para rodar no **GitHub Pages**
 - As senhas **não ficam na planilha nem no GitHub**. Elas são guardadas criptografadas (hash) nas *Propriedades do script*, que só o dono da conta Google vê.
 - Só o e-mail da lista `EMAILS_PERMITIDOS` (no `Code.gs`) consegue criar acesso ou entrar.
 - Depois de 5 senhas erradas, o login fica bloqueado por 10 minutos.
-- A sessão dura 12 horas, ou 30 dias se você marcar **Manter conectado**. Ao sair, os dados são apagados do navegador.
+- A sessão dura 12 horas, ou 1 ano se você marcar **Manter conectado**. Ao sair, os dados são apagados do navegador.
 - **Esqueci minha senha:** o sistema envia um código de 6 dígitos para cheeloutshop@gmail.com.
 - **Emergência:** no Apps Script, execute a função `resetarAcessos` para apagar a senha e criar um novo acesso pelo site.
 - A senha pode ser trocada em **Configurações › Acesso**.
@@ -67,7 +67,7 @@ Se o `config.js` estiver sem URL, o ERP funciona em **modo local**: login e dado
 2. Selecione a função **`setup`** e clique em **Executar**. O Google vai pedir uma nova autorização (Google Drive e agendamento): aprove.
 3. Clique em **Implantar › Gerenciar implantações**, no lápis ✏️, em **Versão: Nova versão** e em **Implantar**. A URL continua a mesma.
 
-A partir daí, todo dia às 3h (e no primeiro login do dia) é salva uma cópia completa da planilha na pasta **"Cheel Out Shop — Backups do ERP"** do Google Drive. Ficam guardados os últimos 30 dias.
+A partir daí, todo dia às 3h (e no primeiro login do dia) é salva uma cópia completa da planilha na pasta **"Cheel Out Shop — Backups do ERP"** do Google Drive. Ficam guardados só os 2 últimos backups (o mais antigo é apagado a cada backup novo).
 
 As configurações avançadas (conexão, troca de senha, importar/exportar, dados de exemplo) continuam disponíveis no endereço `#/avancado` do site.
 

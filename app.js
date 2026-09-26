@@ -21,7 +21,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '21.1';
+const APP_VERSAO = '21.3';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -620,7 +620,7 @@ function viewPainel(el) {
   const serieC = meses.map(m => d.compras.filter(c => c.status === 'Recebido' && c.formaPgto !== INTEGRACAO && (c.data || '').startsWith(m)).reduce((s, c) => s + num(c.total), 0));
 
   const limite = addDias(hoje(), 30);
-  const fv = UI.fVenc || 'todos';
+  const fv = 'pagar';   // o painel mostra só as contas a pagar
   const diasAte = d => Math.round((new Date(d + 'T12:00:00') - new Date(hoje() + 'T12:00:00')) / 864e5);
   const todasProx = [
     ...recAb.filter(c => statusConta(c) !== 'Disponível').map(c => ({ ...c, _t: 'receber' })),
@@ -646,8 +646,8 @@ function viewPainel(el) {
   el.innerHTML = alertaNeg + alertaPreco + barraJamble(true) + `
     <div class="kpis">
       <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${comissoesMes(mes) ? ` · comissões <span class="neg">${brl(comissoesMes(mes))}</span>` : ''}</div></div>
-      <div class="card kpi green"><div class="lbl">A receber (em aberto)</div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
-      <div class="card kpi red"><div class="lbl">A pagar (em aberto)</div><div class="val">${brl(sum(pagAb))}</div><div class="hint">${pagVenc.length ? `<span class="neg">${pagVenc.length} vencida(s) · ${brl(sum(pagVenc))}</span>` : 'Nenhuma vencida'}</div></div>
+      <div class="card kpi green kpi-link" data-ir="receber" role="link" tabindex="0" title="Abrir contas a receber"><div class="lbl">A receber (em aberto) <span class="kpi-seta">›</span></div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
+      <div class="card kpi red kpi-link" data-ir="pagar" role="link" tabindex="0" title="Abrir contas a pagar"><div class="lbl">A pagar (em aberto) <span class="kpi-seta">›</span></div><div class="val">${brl(sum(pagAb))}</div><div class="hint">${pagVenc.length ? `<span class="neg">${pagVenc.length} vencida(s) · ${brl(sum(pagVenc))}</span>` : 'Nenhuma vencida'}</div></div>
       <div class="card kpi blue"><div class="lbl">Valor em estoque (custo)</div><div class="val">${brl(valorEst)}</div><div class="hint">${ativos.length} produto(s) · ${baixo.length ? `<span class="neg">${baixo.length} abaixo do mínimo</span>` : 'estoque ok'}</div></div>
     </div>
     <div class="two">
@@ -657,9 +657,8 @@ function viewPainel(el) {
         <div class="legend"><span><i style="background:var(--blue-600)"></i>Vendas</span><span><i style="background:var(--yellow-2)"></i>Compras recebidas</span></div>
       </div>
       <div class="card">
-        <h3>Vencimentos — próximos 30 dias</h3>
+        <h3 style="justify-content:space-between">Contas a pagar — próximos 30 dias <a class="btn ghost sm" href="#/pagar">Ver todas</a></h3>
         <div class="venc-top">
-          <div class="chips">${[['todos', 'Todos'], ['pagar', 'A pagar'], ['receber', 'A receber']].map(([k, t]) => `<button class="chip ${fv === k ? 'on' : ''}" data-fv="${k}">${t}</button>`).join('')}</div>
           <div class="venc-leg"><span><i class="v-red"></i>até 7 dias</span><span><i class="v-orange"></i>8 a 20</span><span><i class="v-green"></i>21 a 30</span></div>
         </div>
         ${proximas.length ? `<div class="venc-list">${proximas.map(c => { const d = diasAte(c.vencimento); return `
@@ -669,7 +668,7 @@ function viewPainel(el) {
             <button class="btn ${c._t === 'pagar' ? 'primary' : 'ghost'} sm venc-bt" data-baixa-venc="${esc(c._t)}:${esc(c.id)}">${ICON.check}${c._t === 'pagar' ? 'Pagar' : 'Receber'}</button>
           </div>`; }).join('')}</div>
           <div class="venc-tot">${fv !== 'receber' ? `<span>A pagar: <b class="neg">${brl(somaP)}</b></span>` : ''}${fv !== 'pagar' ? `<span>A receber: <b class="pos">${brl(somaR)}</b></span>` : ''}</div>`
-          : '<div class="empty">Nada vencendo nos próximos 30 dias 🎉</div>'}
+          : '<div class="empty">Nenhuma conta a pagar nos próximos 30 dias 🎉</div>'}
       </div>
     </div>
     <div class="two even">
@@ -694,6 +693,7 @@ function viewPainel(el) {
   ligarBarraJamble(el);
   const fcm = $('#fcMes', el); if (fcm) fcm.onchange = e => { UI.fcMes = e.target.value || mesAtual(); render(); };
   $$('[data-fv]', el).forEach(b => b.onclick = () => { UI.fVenc = b.dataset.fv; render(); });
+  $$('[data-ir]', el).forEach(c => { const ir = () => { UI[c.dataset.ir === 'receber' ? 'stRec' : 'stPag'] = 'abertas'; location.hash = '#/' + c.dataset.ir; }; c.onclick = ir; c.onkeydown = e => { if (e.key === 'Enter') ir(); }; });
   $$('[data-baixa-venc]', el).forEach(b => b.onclick = () => { const [t, id] = b.dataset.baixaVenc.split(':'); const c = Store.data[t].find(x => x.id === id); if (c) formBaixa(t, c); });
 }
 
@@ -3340,7 +3340,7 @@ function formInsumo(p) {
    ========================================================= */
 const LS_SNAP = 'cheel_erp_snapshots_v1';
 function snapshotsLocais() { try { return JSON.parse(localStorage.getItem(LS_SNAP) || '[]'); } catch (e) { return []; } }
-/* Guarda 1 cópia por dia neste aparelho (últimos 7 dias) */
+/* Guarda cópias neste aparelho (só as 2 últimas) */
 function backupLocalDiario(forcar) {
   const temDados = Object.values(Store.data).some(l => l.length);
   if (!temDados) return false;
@@ -3349,7 +3349,7 @@ function backupLocalDiario(forcar) {
   if (!forcar && snaps.some(s => s.dia === dia)) return false;
   snaps = snaps.filter(s => s.dia !== dia);
   snaps.unshift({ dia, em: agora(), dados: Store.data });
-  snaps = snaps.slice(0, 7);
+  snaps = snaps.slice(0, 2);
   for (let n = snaps.length; n > 0; n--) {
     try { localStorage.setItem(LS_SNAP, JSON.stringify(snaps.slice(0, n))); return true; } catch (e) { /* sem espaço: guarda menos dias */ }
   }
@@ -3520,14 +3520,14 @@ function viewConfig(el) {
     <div class="card" style="max-width:860px">
       <h3>${ICON.sync} Backup automático</h3>
       ${Store.online ? `
-        <p class="muted" style="margin:0 0 14px;font-weight:700">Todo dia o sistema salva uma <b>cópia completa da planilha</b> no Google Drive da conta da loja, na pasta <b>“Cheel Out Shop — Backups do ERP”</b>. Ficam guardados os <b>últimos 30 dias</b>.</p>
+        <p class="muted" style="margin:0 0 14px;font-weight:700">Todo dia o sistema salva uma <b>cópia completa da planilha</b> no Google Drive da conta da loja, na pasta <b>“Cheel Out Shop — Backups do ERP”</b>. Ficam guardados só os <b>2 últimos backups</b>: a cada backup novo (automático ou pelo botão), o mais antigo é apagado.</p>
         <div id="bkDrive" class="note">Consultando backups no Google Drive…</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
           <button class="btn primary" id="bkAgora">${ICON.sync}Fazer backup agora</button>
           <a class="btn ghost" id="bkPasta" href="https://drive.google.com/drive/search?q=Cheel%20Out%20Shop%20%E2%80%94%20Backups%20do%20ERP" target="_blank" rel="noopener">Abrir pasta no Google Drive</a>
         </div>` : `
         <div class="note warn">O sistema está em <b>modo local</b>: os dados ficam só neste navegador. Enquanto a planilha do Google não estiver conectada, o backup automático é guardado apenas aqui.</div>`}
-      <div class="section-t">Cópias guardadas neste aparelho (últimos 7 dias)</div>
+      <div class="section-t">Cópias guardadas neste aparelho (2 últimas)</div>
       ${snaps.length ? `<ul class="list">${snaps.map((s, i) => `<li><span class="l">${dataBR(s.dia)}<span class="s">${Object.values(s.dados || {}).reduce((a, l) => a + (l?.length || 0), 0)} registros · salvo às ${new Date(s.em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span></span><button class="btn ghost sm" data-snap="${i}">${ICON.down}Baixar</button></li>`).join('')}</ul>`
         : `<div class="empty" style="padding:24px">${total ? 'A primeira cópia será feita no próximo login.' : 'Nenhum dado lançado ainda.'}</div>`}
     </div>`;
@@ -3762,7 +3762,7 @@ const Auth = {
   gravarLocal(email, reg) { const u = this.locais(); if (reg) u[email] = reg; else delete u[email]; localStorage.setItem(LS_USERS, JSON.stringify(u)); },
   checarEmail(email) { if (normEmail(email) !== EMAIL_PADRAO) throw new Error('E-mail não autorizado a acessar este sistema.'); },
   checarSenha(s) { if (String(s).length < 8) throw new Error('A senha precisa ter pelo menos 8 caracteres.'); },
-  expLocal(lembrar) { return Date.now() + (lembrar ? 30 * 864e5 : 12 * 36e5); },
+  expLocal(lembrar) { return Date.now() + (lembrar ? 365 * 864e5 : 12 * 36e5); },
 
   async login(email, senha, lembrar) {
     email = normEmail(email);
@@ -3867,6 +3867,13 @@ function cartaHTML(i) {
   </div>`;
 }
 
+/* A animação de entrada aparece só na primeira vez do dia — nas outras, entra direto */
+function entrarComAnimacao() {
+  let ult = ''; try { ult = localStorage.getItem('cheel_erp_anim') || ''; } catch (e) {}
+  if (ult === hoje()) return Auth.entrar();
+  try { localStorage.setItem('cheel_erp_anim', hoje()); } catch (e) {}
+  animarEntrada(() => Auth.entrar());
+}
 function animarEntrada(depois) {
   const intro = $('#intro'), fly = $('#flyLogo'), img = $('img', fly), bg = $('#introBg');
   const reduz = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -4106,7 +4113,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
       if (tela === 'login') {
         if (!fd.email || !fd.senha) throw new Error('Informe e-mail e senha.');
         await Auth.login(fd.email, fd.senha, lembrar);
-        animarEntrada(() => Auth.entrar());
+        entrarComAnimacao();
       } else if (tela === 'novo' || tela === 'codigo') {
         if (tela === 'codigo' && !/^\d{6}$/.test(String(fd.codigo).trim())) throw new Error('Digite o código de 6 dígitos.');
         Auth.checarSenha(fd.senha);

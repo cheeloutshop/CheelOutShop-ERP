@@ -632,3 +632,7 @@ tr.muted td { color: var(--ink-3); }
 @media (max-width: 560px) { .venc { flex-wrap: wrap; } .venc-bt { width: 100%; justify-content: center; } }
 .venc-l b { white-space: normal; overflow: visible; text-overflow: clip; display: block; }
 .jb-alert { min-width: 220px; }
+/* v21.2 — cards clicáveis */
+.kpi-link { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
+.kpi-link:hover, .kpi-link:focus-visible { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(10,42,107,.14); outline: none; }
+.kpi-seta { font-size: 15px; color: var(--blue-600); }
