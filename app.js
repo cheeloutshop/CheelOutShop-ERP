@@ -21,7 +21,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '22.1';
+const APP_VERSAO = '23';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -453,6 +453,41 @@ function custoMedio(pid, movs) {
   }
   return teve ? Math.round(med * 1e4) / 1e4 : null;
 }
+/* Recalcula tudo pela regra do custo médio: o custo atual de cada produto e o custo gravado nas saídas
+   (vendas, retiradas, sorteios, balanço). Serve para acertar o que foi lançado antes do custo médio existir. */
+function opsRecalcularCustos() {
+  const ops = [], vendasAjust = {};
+  for (const p of Store.data.produtos) {
+    if (p.consigId) continue;
+    const lista = Store.data.movimentos.filter(m => m.produtoId === p.id).sort((a, b) => ((a.data || '') + (a.criadoEm || '')).localeCompare((b.data || '') + (b.criadoEm || '')));
+    if (!lista.length) continue;
+    let qtd = 0, med = 0, teve = false;
+    for (const m of lista) {
+      const q = num(m.quantidade), cu = num(m.custoUnit);
+      if (m.origem === 'ajuste-custo') { med = cu; teve = true; continue; }
+      if (m.tipo === 'saida') {
+        const certo = Math.round(med * 1e4) / 1e4;
+        if (teve && ['venda', 'retirada', 'sorteio', 'balanco'].includes(m.origem) && Math.abs(cu - certo) > 0.005) {
+          ops.push(up('movimentos', { ...m, custoUnit: certo }));
+          if (m.origem === 'retirada' || m.origem === 'sorteio') (vendasAjust[m.origemId] = vendasAjust[m.origemId] || {})[p.id] = certo;
+        }
+        qtd -= q; continue;
+      }
+      if (cu > 0 && ['compra', 'manual'].includes(m.origem)) { med = qtd > 0 ? (qtd * med + q * cu) / (qtd + q) : cu; teve = true; }
+      else if (!teve && cu > 0) { med = cu; teve = true; }
+      qtd += q;
+    }
+    const cm = Math.round(med * 1e4) / 1e4;
+    if (teve && Math.abs(num(p.custo) - cm) > 1e-4) ops.push(up('produtos', { ...p, custo: cm }));
+  }
+  // retiradas e sorteios valem a custo: o valor dos itens acompanha o custo corrigido
+  for (const [vid, custos] of Object.entries(vendasAjust)) {
+    const v = Store.data.vendas.find(x => x.id === vid); if (!v) continue;
+    const itens = v.itens.map(i => custos[i.produtoId] != null ? { ...i, valor: custos[i.produtoId] } : i);
+    ops.push(up('vendas', { ...v, itens, total: totalItens(itens) }));
+  }
+  return ops;
+}
 /* devolve as operações para atualizar o custo dos produtos, considerando a lista de movimentações "como ficará" */
 function opsCustoMedio(pids, movs) {
   const ops = [];
@@ -787,7 +822,8 @@ function abrev(v) { return v >= 1e6 ? (v / 1e6).toLocaleString('pt-BR', { maximu
    PRODUTOS
    ========================================================= */
 function viewProdutos(el) {
-  actions(`<button class="btn accent" id="novoProd">${ICON.plus}Novo produto</button>`);
+  const nPend = fotosPendentes().length;
+  actions(`${nPend ? `<button class="btn ghost" id="fotosPend">📷 Fotos pendentes (${nPend})</button>` : ''}<button class="btn accent" id="novoProd">${ICON.plus}Novo produto</button>`);
   const q = UI.qProd || '';
   const f = UI.fProd || 'ativos';
   const sal = saldos();
@@ -830,6 +866,7 @@ function viewProdutos(el) {
   $('#catProd').onchange = e => { UI.catProd = e.target.value; render(); };
   $$('[data-f]', el).forEach(b => b.onclick = () => { UI.fProd = b.dataset.f; render(); });
   $('#novoProd').onclick = () => formProduto();
+  $('#fotosPend') && ($('#fotosPend').onclick = abrirFotosPendentes);
   $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
   $$('[data-edit]', el).forEach(b => b.onclick = () => formProduto(produto(b.dataset.edit)));
   $$('[data-hist]', el).forEach(b => b.onclick = () => historicoProduto(produto(b.dataset.hist)));
@@ -1151,11 +1188,14 @@ function formAjusteCustos() {
   Modal.open({
     title: 'Ajustar custos do estoque', submit: 'Salvar custos',
     body: `<div id="acWrap"><p class="muted" style="margin:0 0 12px;font-weight:700">Informe o <b>custo médio real das unidades que estão hoje no estoque</b> (ex.: o que você pagou nas compras antigas). Deixe em branco o que não quer mudar. As próximas compras entram na média a partir desse valor.</p>
-      <div class="grid g2" style="margin-bottom:12px">${field('Buscar produto', '<input type="search" id="acQ" placeholder="nome ou SKU…">')}</div>
+      <div class="grid g2" style="margin-bottom:12px;align-items:end">${field('Buscar produto', '<input type="search" id="acQ" placeholder="nome ou SKU…">')}<div><button type="button" class="btn ghost sm" id="acRecalc">${ICON.sync}Recalcular todos os custos médios</button></div></div>
       <div class="items"><table><thead><tr><th>Produto</th><th class="r">Estoque</th><th class="r">Custo médio atual</th><th class="r">Novo custo (R$)</th></tr></thead><tbody>
       ${prods.map(p => `<tr data-q="${esc(norm(p.nome + ' ' + (p.sku || '')))}"><td class="wrap">${esc(p.nome)} <span class="muted">${esc(p.sku || '')}</span></td><td class="r">${qtdFmt(sal[p.id] || 0)}</td><td class="r">${brl(p.custo)}</td><td class="c-val"><input name="c_${p.id}" inputmode="decimal" placeholder="${dec(p.custo) || '0,00'}"></td></tr>`).join('')}
       </tbody></table></div></div>`,
-    onOpen: body => $('#acQ', body).addEventListener('input', e => { const q = norm(e.target.value); $$('tr[data-q]', body).forEach(tr => { tr.hidden = !!q && !tr.dataset.q.includes(q); }); }),
+    onOpen: body => {
+      $('#acQ', body).addEventListener('input', e => { const q = norm(e.target.value); $$('tr[data-q]', body).forEach(tr => { tr.hidden = !!q && !tr.dataset.q.includes(q); }); });
+      $('#acRecalc', body).onclick = () => { const ops = opsRecalcularCustos(); Modal.close(); if (!ops.length) return toast('Todos os custos já estão corretos', 'ok'); Store.commit(ops); toast(`Custos recalculados (${ops.length} ajuste(s))`, 'ok'); };
+    },
     onSubmit: fd => {
       const ops = [];
       for (const p of prods) {
@@ -2493,16 +2533,96 @@ function reduzirImagem(file, max, q) {
   });
 }
 /* Guarda a foto: no Google Drive (planilha conectada) ou, se não der, uma versão pequena junto do produto */
-async function salvarFoto(file, nome) {
+async function salvarFoto(file, nome, max = 700, q = 0.82) {
   if (Store.online) {
     try {
-      const d = await reduzirImagem(file, 700, 0.82);
+      const d = await reduzirImagem(file, max, q);
       const r = await Store.api({ action: 'uploadFoto', nome, base64: d.split(',')[1], mime: 'image/jpeg' });
       if (r && r.foto) return r.foto;
     } catch (e) { console.warn('Upload da foto falhou, guardando versão compacta:', e.message); }
   }
   return reduzirImagem(file, 260, 0.62);
 }
+/* ---------------- Fotos pendentes (busca de imagem) ----------------
+   Não existe mais API gratuita de busca de imagens do Google para contas novas; por isso a busca abre o
+   Google Imagens já com o nome do produto e você só cola a imagem (Ctrl+V) ou o link — o resto é automático. */
+const semFotoAuto = p => /avuls|bulk/.test(norm((p.nome || '') + ' ' + (p.categoria || '')));
+const fotosPendentes = () => Store.data.produtos.filter(p => p.ativo !== 'nao' && !p.foto && !semFotoAuto(p)).sort((a, b) => a.nome.localeCompare(b.nome));
+const FOTO_MAX = 480, FOTO_Q = 0.78;   // foto pequena: ~20–40 KB
+function b64ParaBlob(b64, mime) { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: mime || 'image/jpeg' }); }
+async function imagemDeLink(url) {
+  url = String(url || '').trim();
+  if (/^data:image\//.test(url)) return b64ParaBlob(url.split(',')[1], url.slice(5, url.indexOf(';')));
+  if (!/^https?:\/\//i.test(url)) throw new Error('Cole o endereço da imagem (começa com https://)');
+  try { const r = await fetch(url, { mode: 'cors' }); if (r.ok) { const b = await r.blob(); if (/^image\//.test(b.type)) return b; } } catch (e) { /* o site não deixa baixar direto: usa a planilha */ }
+  if (!Store.online) throw new Error('Este site não deixa baixar a imagem direto. Use “Copiar imagem” e Ctrl+V.');
+  const r = await Store.api({ action: 'baixarImagem', url });
+  return b64ParaBlob(r.base64, r.mime);
+}
+function abrirFotosPendentes() {
+  const lista = fotosPendentes();
+  if (!lista.length) return toast('Todos os produtos (exceto Cartas Avulsas e Bulk) já têm foto 🎉', 'ok');
+  let ativo = null;
+  $('#modal').classList.add('pdv-modal');
+  Modal.open({
+    title: `Fotos pendentes (${lista.length})`,
+    body: `<div class="note">Para cada produto: <b>1.</b> clique em <b>🔍 Buscar</b> (abre o Google Imagens com o nome do produto e “fundo branco”) · <b>2.</b> na imagem escolhida, clique com o botão direito › <b>Copiar imagem</b> · <b>3.</b> volte aqui, clique no quadro do produto e aperte <b>Ctrl+V</b> (ou arraste a imagem, ou cole o link). A foto é reduzida (${FOTO_MAX}px) e salva sozinha. Cartas Avulsas e Bulk ficam de fora.</div>
+      <div class="fp-lista">${lista.map(p => `<div class="fp-it" data-fp="${p.id}">
+        <div class="fp-zona" tabindex="0" title="Clique aqui e cole a imagem (Ctrl+V) ou arraste">${FOTO_VAZIA}<small>colar<br>imagem</small></div>
+        <div class="fp-info"><b>${esc(p.nome)}</b><small>${esc(p.sku || '')}${p.categoria ? ' · ' + esc(p.categoria) : ''}</small>
+          <div class="fp-bts"><a class="btn ghost sm" target="_blank" rel="noopener" href="https://www.google.com/search?tbm=isch&q=${encodeURIComponent(p.nome + ' fundo branco')}" data-fp-busca>🔍 Buscar</a><button type="button" class="btn ghost sm" data-fp-link>🔗 Colar link</button></div>
+          <div class="fp-st"></div></div>
+      </div>`).join('')}</div>`,
+    onOpen: body => {
+      const salvar = async (it, blob) => {
+        const p = produto(it.dataset.fp), z = $('.fp-zona', it), st = $('.fp-st', it);
+        if (!blob || !/^image\//.test(blob.type || 'image/')) { st.innerHTML = '<span class="neg">Isso não é uma imagem.</span>'; return; }
+        it.classList.add('carregando'); st.textContent = 'Reduzindo e salvando…';
+        try {
+          const foto = await salvarFoto(blob, p.nome, FOTO_MAX, FOTO_Q);
+          await Store.commit([up('produtos', { ...produto(p.id), foto })]);
+          z.innerHTML = fotoHTML({ foto }, 'fp-img'); it.classList.add('ok'); st.innerHTML = '<span class="pos">✓ foto salva</span>';
+          const prox = it.nextElementSibling; if (prox) { ativo = prox; $$('.fp-it', body).forEach(x => x.classList.toggle('on', x === prox)); }
+        } catch (e) { st.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+        it.classList.remove('carregando');
+      };
+      const marcar = it => { ativo = it; $$('.fp-it', body).forEach(x => x.classList.toggle('on', x === it)); };
+      $$('.fp-it', body).forEach(it => {
+        it.addEventListener('click', () => marcar(it));
+        const z = $('.fp-zona', it);
+        z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('drag'); });
+        z.addEventListener('dragleave', () => z.classList.remove('drag'));
+        z.addEventListener('drop', async e => {
+          e.preventDefault(); z.classList.remove('drag'); marcar(it);
+          const f = e.dataTransfer.files[0];
+          if (f) return salvar(it, f);
+          const u = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
+          if (u) { try { salvar(it, await imagemDeLink(u)); } catch (er) { $('.fp-st', it).innerHTML = `<span class="neg">${esc(er.message)}</span>`; } }
+        });
+        $('[data-fp-busca]', it).addEventListener('click', () => marcar(it));
+        $('[data-fp-link]', it).onclick = async () => {
+          marcar(it);
+          const u = window.prompt('Cole o link (endereço) da imagem:'); if (!u) return;
+          $('.fp-st', it).textContent = 'Baixando…';
+          try { salvar(it, await imagemDeLink(u)); } catch (er) { $('.fp-st', it).innerHTML = `<span class="neg">${esc(er.message)}</span>`; }
+        };
+      });
+      marcar($('.fp-it', body));
+      // Ctrl+V em qualquer lugar da janela cola no produto selecionado
+      const colar = async e => {
+        if (!$('#modal').open || !ativo || !document.body.contains(ativo)) return;
+        const itens = [...(e.clipboardData?.items || [])];
+        const img = itens.find(i => i.type.startsWith('image/'));
+        if (img) { e.preventDefault(); return salvar(ativo, img.getAsFile()); }
+        const txt = e.clipboardData?.getData('text/plain');
+        if (txt && /^(https?:|data:image)/i.test(txt.trim())) { e.preventDefault(); $('.fp-st', ativo).textContent = 'Baixando…'; try { salvar(ativo, await imagemDeLink(txt)); } catch (er) { $('.fp-st', ativo).innerHTML = `<span class="neg">${esc(er.message)}</span>`; } }
+      };
+      document.addEventListener('paste', colar);
+      $('#modal').addEventListener('close', () => document.removeEventListener('paste', colar), { once: true });
+    },
+  });
+}
+
 /* Campo de foto reutilizável: devolve { valor() } */
 function campoFoto(box, inicial, nomeFn) {
   let valor = inicial || '';
@@ -3468,6 +3588,9 @@ function migracaoV19() {
     const nv = { ...v, itens, desconto: 0, total: totalItens(itens), comissao: 0, comissaoPct: 0, formaPgto: '', parcelas: 1 };
     add(up('vendas', nv)); efeitosVenda(nv).forEach(add);
   }
+  // v22.2: acerta custos lançados antes do custo médio (1x por aparelho; o cálculo é o mesmo em qualquer aparelho)
+  let rc = ''; try { rc = localStorage.getItem('cheel_erp_recalc') || ''; } catch (e) {}
+  if (rc !== '22.2') { opsRecalcularCustos().forEach(add); try { localStorage.setItem('cheel_erp_recalc', '22.2'); } catch (e) {} }
   if (ops.length) Store.commit(ops).then(() => render());
 }
 function formSaldosAbertura() {
@@ -3828,7 +3951,7 @@ const Auth = {
     try { this.sess = JSON.parse(localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || 'null'); } catch (e) { this.sess = null; }
     if (this.sess && (Date.now() > num(this.sess.exp) || this.sess.modo !== this.modo || (this.sess.modo === 'online' && this.sess.url !== Store.cfg.url))) this.limpar();
     $('#ano').textContent = new Date().getFullYear();
-    if (this.sess) this.entrar(); else this.mostrarLogin('login');
+    if (this.sess) entrarComAnimacao(); else this.mostrarLogin('login');
   },
   salvar(s, lembrar) {
     this.sess = { ...s, email: normEmail(s.email), modo: this.modo, url: Store.cfg.url };
@@ -3952,11 +4075,10 @@ function cartaHTML(i) {
   </div>`;
 }
 
-/* A animação de entrada aparece só na primeira vez do dia — nas outras, entra direto */
+/* Animação de entrada sempre que entrar no sistema. Enquanto ela roda, os dados já vão sendo buscados
+   na planilha (em paralelo) — a animação não atrasa nada. */
 function entrarComAnimacao() {
-  let ult = ''; try { ult = localStorage.getItem('cheel_erp_anim') || ''; } catch (e) {}
-  if (ult === hoje()) return Auth.entrar();
-  try { localStorage.setItem('cheel_erp_anim', hoje()); } catch (e) {}
+  if (Store.online && Auth.sess) Store.load().catch(() => {});
   animarEntrada(() => Auth.entrar());
 }
 function animarEntrada(depois) {
@@ -4166,7 +4288,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
   }
   card.innerHTML = html;
   $('#authMode').innerHTML = online
-    ? `<span class="dot on"></span>Conectado à planilha do Google · <button class="link" data-go="conexao" style="font-size:13px">alterar</button>`
+    ? `<span class="dot on"></span>Conectado à planilha do Google`
     : `<span class="dot"></span>Modo local (dados neste navegador) · <button class="link" data-go="conexao" style="font-size:13px">conectar planilha</button>`;
 
   $$('[data-go]').forEach(b => b.onclick = () => renderAuth(b.dataset.go));
@@ -4205,7 +4327,7 @@ function renderAuth(tela, aviso = '', extra = {}) {
         if (fd.senha !== fd.conf) throw new Error('As senhas não conferem.');
         if (tela === 'novo') await Auth.registrar(fd.email, fd.senha, lembrar);
         else { const r = await Store.api({ action: 'reset', email: fd.email, codigo: fd.codigo, senha: fd.senha }); Auth.salvar(r, false); }
-        animarEntrada(() => Auth.entrar());
+        entrarComAnimacao();
         setTimeout(() => toast(tela === 'novo' ? 'Acesso criado. Bem-vindo!' : 'Senha alterada', 'ok'), 1800);
       } else if (tela === 'esqueci') {
         if (Store.online) {

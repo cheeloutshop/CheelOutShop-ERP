@@ -653,3 +653,18 @@ tr.muted td { color: var(--ink-3); }
 .vp-bts { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .custo-form { background: var(--blue-50); border-radius: 10px; padding: 10px 12px; font-weight: 800; color: var(--blue-800); }
 @media (max-width: 640px) { .vp { grid-template-columns: 1fr; } .vp-img, .vp-foto .vazia { width: 100%; height: 220px; } .vp-grid { grid-template-columns: 1fr; } }
+
+/* ---------- v23 — fotos pendentes ---------- */
+.fp-lista { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; margin-top: 12px; }
+.fp-it { display: flex; gap: 12px; align-items: center; border: 2px solid var(--line); border-radius: 12px; padding: 10px; background: #fff; cursor: pointer; transition: border-color .12s; }
+.fp-it.on { border-color: var(--blue-500); box-shadow: 0 0 0 3px rgba(42,107,224,.12); }
+.fp-it.ok { border-color: #9ED9B8; background: #F6FCF8; }
+.fp-it.carregando { opacity: .6; pointer-events: none; }
+.fp-zona { flex: none; width: 84px; height: 84px; border: 2px dashed #C9D8F7; border-radius: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #F5F8FF; color: var(--ink-3); text-align: center; overflow: hidden; }
+.fp-zona svg { width: 28px; height: 28px; fill: #B7C5E3; } .fp-zona small { font-size: 10.5px; font-weight: 800; line-height: 1.15; }
+.fp-zona.drag, .fp-zona:focus { border-color: var(--blue-500); outline: none; }
+.fp-img { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+.fp-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fp-info b { font-size: 14px; } .fp-info > small { font-size: 12px; font-weight: 700; color: var(--ink-3); }
+.fp-bts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.fp-st { font-size: 12px; font-weight: 800; min-height: 15px; }
