@@ -17,7 +17,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '19.2';
+const APP_VERSAO = '19.3';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -34,7 +34,11 @@ const FORMAS = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 
 const A_VISTA = ['Pix', 'Dinheiro', 'Cartão de débito'];
 const ST_VENDA = ['Pendente', 'Orçamento', 'Em aberto', 'Atendido', 'Cancelado'];
 const ST_COMPRA = ['Em aberto', 'Recebido', 'Cancelado'];
-const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];   // Pix = à vista; os demais podem parcelar
+const FORMAS_COMPRA = ['Pix', 'Cartão de crédito', 'Boleto', 'Reembolso'];
+/* Integração (implantação): pedido de compra que só atualiza estoque e custos, sem contas a pagar. Disponível por 7 dias. */
+const INTEGRACAO = 'Integração';
+const INTEGRACAO_ATE = '2026-10-02';
+const integracaoAtiva = () => hoje() <= INTEGRACAO_ATE;   // Pix = à vista; os demais podem parcelar
 const UN_COMPRA = [['UN', 'Unidade'], ['CX', 'Caixa'], ['FD', 'Fardo'], ['PCT', 'Pacote'], ['DZ', 'Dúzia'], ['KIT', 'Kit'], ['PAR', 'Par'], ['OUTRA', 'Outra']];
 const fatorItem = it => (!it.un || it.un === 'UN') ? 1 : Math.max(1, num(it.fator) || 1);
 const CAT_PAGAR = ['Fornecedores', 'Repasse consignado', 'Comissão Jamble', 'Frete', 'Aluguel', 'Salários', 'Impostos', 'Marketing', 'Tarifas / Taxas', 'Energia / Internet', 'Outros'];
@@ -417,7 +421,7 @@ function efeitosCompra(c) {
   }
   const pags = Store.data.pagar.filter(r => r.origem === 'compra' && r.origemId === c.id);
   const temPago = pags.some(r => r.status === 'Pago');
-  if (c.status === 'Cancelado') {
+  if (c.status === 'Cancelado' || c.formaPgto === INTEGRACAO) {
     pags.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id)));
   } else if (!temPago) {
     pags.forEach(r => ops.push(del('pagar', r.id)));
@@ -541,7 +545,7 @@ function viewPainel(el) {
   const base = new Date(); base.setDate(1);
   for (let i = 5; i >= 0; i--) { const dt = new Date(base.getFullYear(), base.getMonth() - i, 1); meses.push(dt.toLocaleDateString('sv-SE').slice(0, 7)); }
   const serieV = meses.map(m => vendasOk.filter(v => (v.data || '').startsWith(m)).reduce((s, v) => s + num(v.total), 0));
-  const serieC = meses.map(m => d.compras.filter(c => c.status === 'Recebido' && (c.data || '').startsWith(m)).reduce((s, c) => s + num(c.total), 0));
+  const serieC = meses.map(m => d.compras.filter(c => c.status === 'Recebido' && c.formaPgto !== INTEGRACAO && (c.data || '').startsWith(m)).reduce((s, c) => s + num(c.total), 0));
 
   const limite = addDias(hoje(), 30);
   const fv = UI.fVenc || 'todos';
@@ -1603,7 +1607,8 @@ function formCompra(p) {
   };
   const numeroPrevisto = novo ? proxNumero(Store.data.compras) : p.numero;
   const forn = contato(p.fornecedorId);
-  const formas = FORMAS_COMPRA.includes(p.formaPgto) || !p.formaPgto ? FORMAS_COMPRA : [...FORMAS_COMPRA, p.formaPgto];
+  const formasBase = integracaoAtiva() || p.formaPgto === INTEGRACAO ? [...FORMAS_COMPRA, INTEGRACAO] : FORMAS_COMPRA;
+  const formas = formasBase.includes(p.formaPgto) || !p.formaPgto ? formasBase : [...formasBase, p.formaPgto];
   const statusAnterior = p.status;
   Modal.open({
     title: novo ? 'Novo pedido de compra' : `Pedido de compra nº ${p.numero}`,
@@ -1656,6 +1661,7 @@ function formCompra(p) {
         ${field('1º vencimento', inp('vencimento', p.vencimento || p.data, 'type="date" id="pgVenc"'))}
         <div class="f" style="justify-content:end"><span class="muted" id="pgResumo" style="font-size:13px;font-weight:800"></span></div>
       </div>
+      <div class="note warn" id="pgInteg" hidden><b>Integração</b> (lançamento de implantação — disponível até ${dataBR(INTEGRACAO_ATE)}): o pedido só dá entrada no estoque e atualiza o custo dos produtos ao marcar <b>Recebido</b>. <b>Não gera contas a pagar</b> nem mexe no caixa. Parcelas que ainda faltam pagar, lance em Contas a pagar › Nova conta › “Conta já parcelada”.</div>
       ${field('Observações', `<textarea name="obs">${esc(p.obs)}</textarea>`, '')}
       <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado <b>já com o frete rateado</b> (proporcional ao valor de cada item). O frete não soma no total do pedido.</div>`,
     onOpen: body => {
@@ -1696,10 +1702,13 @@ function formCompra(p) {
         const total = s - num($('#pedDesc').value);   // o frete NÃO entra no total do pedido (vai para o custo dos produtos)
         $('#tTotal').textContent = brl(total);
         $('#eqTotal').textContent = un ? `Entrada no estoque: ${qtdFmt(un)} unidade(s)` : '';
-        const pix = $('#pgForma').value === 'Pix';
+        const integ = $('#pgForma').value === INTEGRACAO;
+        const pix = $('#pgForma').value === 'Pix' || integ;
         $('#pgParc').disabled = pix; if (pix) $('#pgParc').value = 1;
+        $('#pgVenc').disabled = integ;
+        $('#pgInteg').hidden = !integ;
         const n = Math.max(1, Math.floor(num($('#pgParc').value)) || 1);
-        $('#pgResumo').textContent = total > 0 ? (n > 1 ? `${n}x de ${brl(total / n)}` : `1x de ${brl(total)}`) + ' em contas a pagar' : '';
+        $('#pgResumo').textContent = integ ? 'Integração: não gera contas a pagar' : total > 0 ? (n > 1 ? `${n}x de ${brl(total / n)}` : `1x de ${brl(total)}`) + ' em contas a pagar' : '';
       };
       tb.addEventListener('input', recalc);
       tb.addEventListener('change', e => {
@@ -1722,7 +1731,7 @@ function formCompra(p) {
       });
       $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); recalc(); $('tr:last-child select', tb).focus(); };
       ['#pedFrete', '#pedDesc', '#pgParc'].forEach(s => $(s, body).oninput = recalc);
-      $('#pgForma', body).onchange = recalc;
+      $('#pgForma', body).onchange = () => { if ($('#pgForma').value === INTEGRACAO && $('#pedStatus').value === 'Em aberto') $('#pedStatus').value = 'Recebido'; recalc(); };
 
       // ---- fornecedor: busca + cadastro rápido
       const pnlC = $('#pnlContato', body);
@@ -1802,8 +1811,8 @@ function formCompra(p) {
         numero: novo ? String(proxNumero(Store.data.compras)) : p.numero,   // número definido só agora, ao salvar
         data: fd.data, previsao: p.previsao || '', status: fd.status, fornecedorId: fd.contatoId, itens: linhas,
         frete: r2(fd.frete), desconto: r2(fd.desconto), total, formaPgto,
-        parcelas: formaPgto === 'Pix' ? 1 : Math.max(1, Math.floor(num(fd.parcelas)) || 1),
-        vencimento: fd.vencimento || fd.data, obs: fd.obs, criadoEm: p.criadoEm || agora(),
+        parcelas: formaPgto === 'Pix' || formaPgto === INTEGRACAO ? 1 : Math.max(1, Math.floor(num(fd.parcelas)) || 1),
+        vencimento: formaPgto === INTEGRACAO ? fd.data : (fd.vencimento || fd.data), obs: fd.obs, criadoEm: p.criadoEm || agora(),
         recebidoEm: fd.status === 'Recebido' ? (p.recebidoEm || hoje()) : '',
       };
       const fin = Store.data.pagar.filter(r => r.origemId === rec.id);
@@ -2024,17 +2033,52 @@ function formConta(tipo, c) {
       ${field('Descrição *', inp('descricao', c.descricao, 'required placeholder="Ex.: Aluguel setembro"'), 'span2')}
       ${field(R ? 'Cliente' : 'Fornecedor / favorecido', `<select name="contatoId">${opt(contatos, c.contatoId, '—')}</select>`)}
       ${field('Categoria', inp('categoria', c.categoria, 'list="dlCat"') + `<datalist id="dlCat">${(R ? CAT_RECEBER : CAT_PAGAR).map(x => `<option value="${x}">`).join('')}</datalist>`)}
-      ${field('Valor (R$) *', inp('valor', dec(c.valor), 'inputmode="decimal" required placeholder="0,00"'))}
-      ${field('Vencimento *', inp('vencimento', c.vencimento, 'type="date" required'))}
-      ${novo ? field('Repetir (nº de meses)', inp('repetir', 1, 'type="number" min="1" max="60"')) : ''}
-      ${novo ? field('Já está ' + (R ? 'recebida' : 'paga') + '?', `<select name="jaPago">${opt([['nao', 'Não'], ['sim', 'Sim, hoje']], 'nao')}</select>`) : ''}
+      ${novo ? `<div class="span2 parc-box">
+        ${field('Tipo de lançamento', `<select name="tipoLanc" id="ctTipo">${opt([['unica', 'Conta única (ou repetir todo mês)'], ['parcelada', 'Conta já parcelada — lançar só as parcelas que faltam']], 'unica')}</select>`)}
+        <div class="grid g2" id="ctParc" hidden>
+          ${field('Total de parcelas da compra', inp('parcTotal', '', 'type="number" min="2" max="120" id="ctTot" placeholder="ex.: 12"'))}
+          ${field('Próxima parcela a pagar (nº)', inp('parcProx', '', 'type="number" min="1" max="120" id="ctProx" placeholder="ex.: 5"'))}
+        </div>
+      </div>` : ''}
+      ${field('<span id="ctValLbl">Valor (R$) *</span>', inp('valor', dec(c.valor), 'inputmode="decimal" required placeholder="0,00" id="ctVal"'))}
+      ${field('<span id="ctVencLbl">Vencimento *</span>', inp('vencimento', c.vencimento, 'type="date" required id="ctVenc"'))}
+      ${novo ? `<div id="ctRep">${field('Repetir (nº de meses)', inp('repetir', 1, 'type="number" min="1" max="60"'))}</div>` : ''}
+      ${novo ? `<div id="ctJa">${field('Já está ' + (R ? 'recebida' : 'paga') + '?', `<select name="jaPago">${opt([['nao', 'Não'], ['sim', 'Sim, hoje']], 'nao')}</select>`)}</div>` : ''}
       ${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`, 'span2')}
+      ${novo ? '<div class="note span2" id="ctPrev" hidden></div>' : ''}
     </div>`,
+    onOpen: body => {
+      if (!novo) return;
+      const upd = () => {
+        const parc = $('#ctTipo').value === 'parcelada';
+        $('#ctParc', body).hidden = !parc; $('#ctRep', body).hidden = parc; $('#ctJa', body).hidden = parc; $('#ctPrev', body).hidden = !parc;
+        $('#ctValLbl', body).textContent = parc ? 'Valor de cada parcela (R$) *' : 'Valor (R$) *';
+        $('#ctVencLbl', body).textContent = parc ? 'Vencimento da próxima parcela *' : 'Vencimento *';
+        if (!parc) return;
+        const tot = Math.floor(num($('#ctTot').value)), prox = Math.floor(num($('#ctProx').value)) || 1, v = r2($('#ctVal').value), venc = $('#ctVenc').value;
+        const n = tot >= prox ? tot - prox + 1 : 0;
+        $('#ctPrev', body).innerHTML = tot > 1 && n > 0 && v > 0 && venc
+          ? `Serão lançadas <b>${n} parcela(s)</b> — ${prox}/${tot} até ${tot}/${tot} — de ${brl(v)}, total <b>${brl(v * n)}</b>, vencendo de ${dataBR(venc)} a ${dataBR(addMeses(venc, n - 1))}. As parcelas já pagas (${prox - 1}) não são lançadas.`
+          : 'Informe o total de parcelas, qual é a próxima a pagar, o valor de cada parcela e o vencimento da próxima.';
+      };
+      ['#ctTipo', '#ctTot', '#ctProx', '#ctVal', '#ctVenc'].forEach(q => { $(q, body).addEventListener('input', upd); $(q, body).addEventListener('change', upd); });
+      upd();
+    },
     onSubmit: fd => {
       const valor = r2(fd.valor);
       if (valor <= 0) { toast('Informe um valor maior que zero', 'err'); return false; }
       const base = { ...c, descricao: fd.descricao.trim(), contatoId: fd.contatoId, categoria: fd.categoria.trim(), valor, vencimento: fd.vencimento, obs: fd.obs };
       if (!novo) { Store.commit([up(tipo, base)]); toast('Conta atualizada', 'ok'); return; }
+      if (fd.tipoLanc === 'parcelada') {
+        const tot = Math.floor(num(fd.parcTotal)), prox = Math.floor(num(fd.parcProx)) || 1;
+        if (!(tot > 1)) { toast('Informe o total de parcelas (2 ou mais)', 'err'); return false; }
+        if (prox > tot) { toast('A próxima parcela não pode ser maior que o total', 'err'); return false; }
+        const ops = [];
+        for (let k = prox; k <= tot; k++) ops.push(up(tipo, { ...base, id: uid(), descricao: `${base.descricao} (${k}/${tot})`, vencimento: addMeses(fd.vencimento, k - prox), status: 'Aberto', pagoEm: '', valorPago: '', origem: 'manual', origemId: '', obs: [base.obs, `Parcelamento existente: ${prox - 1} de ${tot} já pagas antes do sistema`].filter(Boolean).join(' · '), criadoEm: agora() }));
+        Store.commit(ops);
+        toast(`${ops.length} parcela(s) lançada(s) — ${brl(valor * ops.length)}`, 'ok');
+        return;
+      }
       const n = Math.max(1, Math.floor(num(fd.repetir)) || 1);
       const ops = [];
       for (let i = 0; i < n; i++) {
