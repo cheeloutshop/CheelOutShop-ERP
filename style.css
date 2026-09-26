@@ -636,3 +636,20 @@ tr.muted td { color: var(--ink-3); }
 .kpi-link { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
 .kpi-link:hover, .kpi-link:focus-visible { transform: translateY(-2px); box-shadow: 0 6px 22px rgba(10,42,107,.14); outline: none; }
 .kpi-seta { font-size: 15px; color: var(--blue-600); }
+
+/* ---------- v22 — ficha do produto e custo médio clicável ---------- */
+.link-prod, .link-custo { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: inherit; }
+.link-prod:hover { color: var(--blue-600); text-decoration: underline; }
+.link-custo { border-bottom: 1.5px dashed var(--blue-500); color: var(--blue-700); font-weight: 800; }
+.link-custo:hover { color: var(--blue-500); }
+.vp { display: grid; grid-template-columns: 200px 1fr; gap: 20px; }
+.vp-img, .vp-foto .vazia { width: 200px; height: 200px; border-radius: 14px; object-fit: cover; background: #F4F6FB; display: flex; align-items: center; justify-content: center; border: 1.5px solid var(--line); }
+.vp-foto .vazia svg { width: 60px; height: 60px; fill: #C3CDE3; }
+.vp-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.vp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+.vp-l { display: flex; flex-direction: column; background: #F7F9FC; border-radius: 10px; padding: 8px 12px; }
+.vp-l > span { font-size: 11.5px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); }
+.vp-l b { font-size: 15px; font-weight: 900; color: var(--blue-800); }
+.vp-bts { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.custo-form { background: var(--blue-50); border-radius: 10px; padding: 10px 12px; font-weight: 800; color: var(--blue-800); }
+@media (max-width: 640px) { .vp { grid-template-columns: 1fr; } .vp-img, .vp-foto .vazia { width: 100%; height: 220px; } .vp-grid { grid-template-columns: 1fr; } }

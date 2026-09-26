@@ -21,7 +21,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '21.3';
+const APP_VERSAO = '22.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -329,7 +329,7 @@ function efeitosVenda(v) {
     for (const it of v.itens) {
       ops.push(up('movimentos', {
         id: uid(), data: v.data, produtoId: it.produtoId, tipo: 'saida', quantidade: num(it.qtd),
-        custoUnit: num(produto(it.produtoId)?.custo), origem: interna ? (sorteio ? 'sorteio' : 'retirada') : 'venda', origemId: v.id,
+        custoUnit: custoSaidaItem(v, it), origem: interna ? (sorteio ? 'sorteio' : 'retirada') : 'venda', origemId: v.id,
         obs: interna ? (sorteio ? `Sorteio${v.referencia ? ': ' + v.referencia : ''} · nº ${v.numero}` : `Retirada de sócio: ${nomeContato(v.clienteId) || 'não informado'} · nº ${v.numero}`) : 'Venda nº ' + v.numero, criadoEm: agora(),
       }));
     }
@@ -357,6 +357,12 @@ function efeitosVenda(v) {
   return ops;
 }
 const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+/* Custo que fica gravado na saída: custo médio do produto; se for consignado, o repasse ao dono por unidade */
+function custoSaidaItem(v, it) {
+  const p = produto(it.produtoId);
+  if (p?.consigId && !ehInterna(v)) { const c = calcRepasse(v, it); if (c && num(it.qtd)) return Math.round(c.repasse / num(it.qtd) * 1e4) / 1e4; }
+  return num(p?.custo);
+}
 /* nome de produto repetido (ignora maiúsculas, acentos e espaços extras) */
 const nomeChave = s => norm(s).replace(/\s+/g, ' ').trim();
 const produtoComNome = (nome, ignorarId) => nomeChave(nome) ? Store.data.produtos.find(x => x.id !== ignorarId && nomeChave(x.nome) === nomeChave(nome)) : null;
@@ -811,9 +817,9 @@ function viewProdutos(el) {
         return `<tr>
           <td class="c-foto">${fotoHTML(p, 'cart-foto')}</td>
           <td class="muted">${esc(p.sku)}</td>
-          <td class="wrap strong">${esc(p.nome)} ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
+          <td class="wrap strong"><button type="button" class="link-prod" data-ver="${p.id}" title="Ver informações do produto">${esc(p.nome)}</button> ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
           <td>${esc(p.categoria)}</td>
-          <td class="r">${brl(p.custo)}</td><td class="r strong">${num(p.preco) ? brl(p.preco) : '<span class="muted">—</span>'}${num(p.precoSugerido) > num(p.preco) ? `<br><span class="badge amber" title="Custo de reposição subiu">sugerido ${brl(p.precoSugerido)}</span>` : ''}</td>
+          <td class="r"><button type="button" class="link-custo" data-custo="${p.id}" title="Ver como o custo médio foi calculado">${p.consigId ? '<span class="muted">consig.</span>' : brl(p.custo)}</button></td><td class="r strong">${num(p.preco) ? brl(p.preco) : '<span class="muted">—</span>'}${num(p.precoSugerido) > num(p.preco) ? `<br><span class="badge amber" title="Custo de reposição subiu">sugerido ${brl(p.precoSugerido)}</span>` : ''}</td>
           <td class="r ${mg < 0 ? 'neg' : ''}">${num(p.preco) ? mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%' : '<span class="muted">—</span>'}</td>
           <td class="r"><span class="badge ${s <= 0 ? 'red' : (num(p.estoqueMin) && s <= num(p.estoqueMin) ? 'amber' : 'green')}">${qtdFmt(s)} ${esc(p.unidade || 'un')}</span></td>
           <td class="act"><span class="inner"><button class="icon-btn" data-hist="${p.id}" title="Histórico de compras e vendas">${ICON.hist}</button><button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button></span></td>
@@ -827,6 +833,8 @@ function viewProdutos(el) {
   $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
   $$('[data-edit]', el).forEach(b => b.onclick = () => formProduto(produto(b.dataset.edit)));
   $$('[data-hist]', el).forEach(b => b.onclick = () => historicoProduto(produto(b.dataset.hist)));
+  $$('[data-ver]', el).forEach(b => b.onclick = () => verProduto(produto(b.dataset.ver)));
+  $$('[data-custo]', el).forEach(b => b.onclick = () => explicarCusto(produto(b.dataset.custo)));
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const p = produto(b.dataset.del);
     const usado = Store.data.movimentos.some(m => m.produtoId === p.id) || [...Store.data.vendas, ...Store.data.compras].some(x => x.itens.some(i => i.produtoId === p.id));
@@ -1014,6 +1022,86 @@ function viewEstoque(el) {
 
 function prodOptions(sel) {
   return opt(Store.data.produtos.filter(p => p.ativo !== 'nao' || p.id === sel).sort((a, b) => a.nome.localeCompare(b.nome)).map(p => [p.id, (p.sku ? p.sku + ' — ' : '') + p.nome]), sel, 'Selecione o produto…');
+}
+
+/* Passo a passo do custo médio (mesma regra de custoMedio) */
+function custoMedioPassos(pid) {
+  const lista = Store.data.movimentos.filter(m => m.produtoId === pid).sort((a, b) => ((a.data || '') + (a.criadoEm || '')).localeCompare((b.data || '') + (b.criadoEm || '')));
+  let qtd = 0, med = 0, teve = false; const passos = [];
+  for (const m of lista) {
+    const q = num(m.quantidade), cu = num(m.custoUnit), antesQ = qtd, antesM = med;
+    let efeito = '';
+    if (m.origem === 'ajuste-custo') { med = cu; teve = true; efeito = 'custo redefinido'; }
+    else if (m.tipo === 'saida') { qtd -= q; efeito = 'saída (não muda o custo)'; }
+    else if (cu > 0 && ['compra', 'manual'].includes(m.origem)) { if (antesQ > 0) { med = (antesQ * antesM + q * cu) / (antesQ + q); efeito = 'entra na média'; } else { med = cu; efeito = !teve ? 'primeira entrada: custo desta entrada' : antesQ < 0 ? 'estoque negativo: custo desta entrada' : 'estoque zerado: custo desta entrada'; } teve = true; qtd += q; }
+    else { if (!teve && cu > 0) { med = cu; teve = true; } qtd += q; efeito = 'entrada sem custo (não muda a média)'; }
+    const rot = { venda: 'Venda', compra: 'Compra', manual: 'Entrada manual', balanco: 'Balanço', 'ajuste-custo': 'Ajuste de custo', retirada: 'Retirada sócio', sorteio: 'Sorteio' }[m.origem] || m.origem;
+    passos.push({ data: m.data, rot, obs: m.obs, tipo: m.origem === 'ajuste-custo' ? 'custo' : m.tipo, q, cu, qtd, med, efeito, conta: efeito === 'entra na média' ? `(${qtdFmt(antesQ)} × ${brl(antesM)} + ${qtdFmt(q)} × ${brl(cu)}) ÷ ${qtdFmt(antesQ + q)}` : '' });
+  }
+  return passos;
+}
+function explicarCusto(p) {
+  if (!p) return;
+  if (p.consigId) {
+    const tx = taxasConsig(p), pj = num(plataformaPorNome('Jamble')?.comissao ?? 10), pr = num(p.preco);
+    Modal.open({ title: 'Custo — ' + p.nome, small: true, body: `<div class="note">Produto <b>consignado</b> de <b>${esc(nomeContato(p.consigId))}</b>: não tem custo de compra e não entra no valor do estoque.</div>
+      <p style="font-weight:700;margin:12px 0 6px">Em cada venda, o custo é o <b>repasse ao dono</b>:</p>
+      <div class="custo-form">valor vendido − taxa da plataforma (real da venda) − imposto ${fmtPct(tx.imposto)}% − comissão ${fmtPct(tx.comissao)}%</div>
+      ${pr ? `<p class="muted" style="font-weight:700;margin:10px 0 0">Estimativa vendendo a ${brl(pr)} na Jamble (${fmtPct(pj)}%): repasse ≈ <b>${brl(pr * (1 - (pj + tx.imposto + tx.comissao) / 100))}</b> por unidade.</p>` : ''}` });
+    return;
+  }
+  const passos = custoMedioPassos(p.id);
+  Modal.open({
+    title: 'Como o custo médio foi calculado — ' + p.nome,
+    body: `<div class="hist-kpis">
+        <div><span>Custo médio atual</span><b>${brl(p.custo)}</b><small>usado nas próximas vendas</small></div>
+        <div><span>Estoque atual</span><b>${qtdFmt(saldos()[p.id] || 0)} ${esc(p.unidade || 'un')}</b><small>valor ${brl(Math.max(0, saldos()[p.id] || 0) * num(p.custo))}</small></div>
+        <div><span>Último custo de compra</span><b>${brl(ultimoCusto(p.id))}</b><small>custo de reposição</small></div>
+        <div><span>Regra</span><b style="font-size:14px">Média ponderada</b><small>só das unidades em estoque</small></div>
+      </div>
+      <div class="section-t">Passo a passo (${passos.length} movimentação(ões))</div>
+      ${passos.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table><thead><tr><th>Data</th><th>Movimentação</th><th class="r">Qtd</th><th class="r">Custo un.</th><th class="r">Estoque depois</th><th class="r">Custo médio depois</th><th>Efeito</th></tr></thead><tbody>
+        ${passos.map(x => `<tr><td>${dataBR(x.data)}</td><td class="wrap">${esc(x.rot)}${x.obs ? `<br><small class="muted">${esc(x.obs)}</small>` : ''}</td><td class="r ${x.tipo === 'saida' ? 'neg' : x.tipo === 'custo' ? '' : 'pos'}">${x.tipo === 'custo' ? '—' : (x.tipo === 'saida' ? '−' : '+') + qtdFmt(x.q)}</td><td class="r">${x.tipo === 'saida' ? '<span class="muted">' + brl(x.cu) + '</span>' : brl(x.cu)}</td><td class="r">${qtdFmt(x.qtd)}</td><td class="r strong">${brl(x.med)}</td><td class="wrap"><small>${esc(x.efeito)}${x.conta ? `<br><span class="muted">${x.conta}</span>` : ''}</small></td></tr>`).join('')}</tbody></table></div>`
+        : '<div class="empty" style="padding:16px">Sem movimentações: o custo é o informado no cadastro.</div>'}`,
+  });
+}
+/* Ficha do produto (somente visualização) */
+function verProduto(p) {
+  if (!p) return;
+  const s = saldos()[p.id] || 0, pr = num(p.preco), cu = num(p.custo);
+  const vendas = Store.data.vendas.filter(v => vendaReal(v) && v.itens.some(i => i.produtoId === p.id));
+  const qV = vendas.reduce((t, v) => t + v.itens.filter(i => i.produtoId === p.id).reduce((a, i) => a + num(i.qtd), 0), 0);
+  const tx = p.consigId ? taxasConsig(p) : null;
+  const linha = (l, v) => `<div class="vp-l"><span>${l}</span><b>${v}</b></div>`;
+  Modal.open({
+    title: p.nome,
+    body: `<div class="vp">
+      <div class="vp-foto">${fotoHTML(p, 'vp-img')}</div>
+      <div class="vp-info">
+        <div class="vp-tags">${p.sku ? `<span class="badge">${esc(p.sku)}</span>` : ''}${p.categoria ? `<span class="badge gray">${esc(p.categoria)}</span>` : ''}${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : '<span class="badge green">ativo</span>'}${p.consigId ? `<span class="badge amber">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</div>
+        <div class="vp-grid">
+          ${linha('Preço de venda', pr ? brl(pr) : '—')}
+          ${p.consigId ? linha('Custo', 'repasse ao dono') : `<div class="vp-l"><span>Custo médio</span><b><button type="button" class="link-custo" id="vpCusto">${brl(cu)}</button></b></div>`}
+          ${p.consigId ? linha('Imposto / comissão', `${fmtPct(tx.imposto)}% / ${fmtPct(tx.comissao)}%`) : linha('Markup · margem', pr && cu ? `${fmtPct((pr / cu - 1) * 100)}% · ${fmtPct((pr - cu) / pr * 100)}%` : '—')}
+          ${linha('Último custo de compra', p.consigId ? '—' : brl(ultimoCusto(p.id)))}
+          ${linha('Estoque', `<span class="${s < 0 ? 'neg' : ''}">${qtdFmt(s)} ${esc(p.unidade || 'un')}</span>`)}
+          ${linha('Estoque mínimo', qtdFmt(p.estoqueMin || 0))}
+          ${linha('Valor em estoque (custo)', p.consigId ? '—' : brl(Math.max(0, s) * cu))}
+          ${linha('Vendido', `${qtdFmt(qV)} un em ${vendas.length} venda(s)`)}
+          ${linha('EAN', esc(p.ean || '—'))}
+          ${linha('NCM', esc(p.ncm || '—'))}
+        </div>
+        ${num(p.precoSugerido) > pr ? `<div class="note warn">💡 Preço sugerido: <b>${brl(p.precoSugerido)}</b> (custo de reposição subiu)</div>` : ''}
+        ${apelidosDe(p).length ? `<p class="muted" style="font-size:12.5px;font-weight:700;margin:10px 0 0">Também reconhecido na Jamble como: ${apelidosDe(p).map(esc).join(' · ')}</p>` : ''}
+      </div>
+    </div>
+    <div class="vp-bts"><button type="button" class="btn ghost" id="vpHist">${ICON.hist}Histórico de compras e vendas</button><button type="button" class="btn primary" id="vpEdit">${ICON.edit}Editar produto</button></div>`,
+    onOpen: body => {
+      $('#vpHist', body).onclick = () => { Modal.close(); setTimeout(() => historicoProduto(p), 30); };
+      $('#vpEdit', body).onclick = () => { Modal.close(); setTimeout(() => formProduto(p), 30); };
+      const c = $('#vpCusto', body); if (c) c.onclick = () => { Modal.close(); setTimeout(() => explicarCusto(p), 30); };
+    },
+  });
 }
 
 /* Histórico do produto: compras (por fornecedor) e vendas com custo médio da época e margem */
@@ -2146,27 +2234,24 @@ function formSaqueJamble() {
         ${field('Data do saque', inp('data', hoje(), 'type="date" required'))}
         ${field('Valor sacado da Jamble (R$) *', inp('valor', '', 'inputmode="decimal" required placeholder="0,00" id="sqValor"'))}
         ${field('Taxa de saque (R$)', inp('taxa', '', 'inputmode="decimal" placeholder="0,00" id="sqTaxa"'))}
-        <label class="f">Antecipação<span class="check-line"><input type="checkbox" name="antecipar" id="sqAnt"> antecipei valores a liberar</span></label>
-        <div id="sqAntBox" hidden class="span2">${field('Taxa de antecipação (R$) — 1% do valor antecipado', inp('antecipacao', '', 'inputmode="decimal" placeholder="0,00" id="sqAntV"'))}</div>
       </div>
       ${field('Observação', inp('obs', '', 'placeholder="opcional"'))}
       <div class="note" id="sqPrev" style="margin-top:12px"></div>`,
     onOpen: body => {
-      let antManual = false;
+      // o saque pode ser de todo o saldo (a Jamble antecipa sozinha): primeiro zera a expectativa, o resto sai dos valores a liberar
       const prev = () => {
-        const v = r2($('#sqValor').value), ant = $('#sqAnt').checked;
-        $('#sqAntBox', body).hidden = !ant;
-        if (ant && !antManual) $('#sqAntV').value = dec(Math.max(0, v - J.disponivel) * 0.01);
-        const tx = r2(num($('#sqTaxa').value) + (ant ? num($('#sqAntV').value) : 0));
-        $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo em aberto (${brl(J.saldo)}).</span>`
-          : v > 0 ? `Cai na conta: <b>${brl(v - tx)}</b>${tx ? ` (taxas ${brl(tx)} lançadas como comissão Jamble)` : ''}. Saldo na Jamble depois do saque: <b>${brl(J.saldo - v)}</b>.${v > J.disponivel + 0.004 && !ant ? '<br><span class="neg">O valor passa da expectativa de valores liberados — marque “antecipação” se foi antecipado.</span>' : ''}`
-          : 'Informe o valor que saiu da Jamble (antes da taxa de saque). Ele dá baixa nas vendas mais antigas primeiro.';
+        const v = r2($('#sqValor').value), tx = r2($('#sqTaxa').value);
+        const daExp = Math.min(v, J.disponivel), daLib = Math.max(0, v - J.disponivel);
+        $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo total da Jamble (${brl(J.saldo)}).</span>`
+          : v > 0 ? `Cai na conta: <b>${brl(v - tx)}</b>${tx ? ` (taxa ${brl(tx)} lançada como comissão Jamble)` : ''}.<br>
+              Sai da expectativa liberada: <b>${brl(daExp)}</b>${daLib ? ` · sai dos valores a liberar: <b>${brl(daLib)}</b>` : ''}<br>
+              Depois do saque: expectativa <b>${brl(J.disponivel - daExp)}</b> · a liberar <b>${brl(J.aLiberar - daLib)}</b> · saldo Jamble <b>${brl(J.saldo - v)}</b>`
+          : 'Informe o valor que saiu da Jamble (antes da taxa de saque). Pode ser até o saldo total.';
       };
-      $('#sqAntV').addEventListener('input', () => { antManual = true; prev(); });
-      ['#sqValor', '#sqTaxa'].forEach(q => $(q).addEventListener('input', prev)); $('#sqAnt').addEventListener('change', prev); prev();
+      ['#sqValor', '#sqTaxa'].forEach(q => $(q).addEventListener('input', prev)); prev();
     },
     onSubmit: fd => {
-      const valor = r2(fd.valor), antecip = fd.antecipar ? r2(fd.antecipacao) : 0, taxa = r2(num(fd.taxa) + antecip);
+      const valor = r2(fd.valor), antecip = 0, taxa = r2(fd.taxa);
       if (valor <= 0) { toast('Informe o valor do saque', 'err'); return false; }
       if (valor > J.saldo + 0.004) { toast(`O saque (${brl(valor)}) é maior que o saldo em aberto da Jamble (${brl(J.saldo)})`, 'err'); return false; }
       if (taxa >= valor) { toast('A taxa não pode ser maior que o saque', 'err'); return false; }

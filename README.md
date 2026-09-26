@@ -111,7 +111,7 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 ## v19 — saldos, taxa de saque, retiradas dos sócios e sorteios
 
 - **Saldos de abertura** (Configurações): conta do banco, Jamble disponível e Jamble a liberar. O Painel mostra o **saldo em conta** = saldo inicial + recebido − pago.
-- **Saque Jamble** com **taxa de saque** e **antecipação** (1% do valor antecipado, editável). As taxas entram em Contas a pagar (já pagas) na categoria **Comissão Jamble** e somam nas comissões do mês.
+- **Saque Jamble** com **taxa de saque** (o saque pode ser de todo o saldo: primeiro zera a expectativa liberada, o resto sai dos valores a liberar). As taxas entram em Contas a pagar (já pagas) na categoria **Comissão Jamble** e somam nas comissões do mês.
 - A faixa da Jamble mostra **disponível para saque** (vendas com mais de 20 dias) e **a liberar**.
 - **Retirada** = pró-labore dos sócios em produtos: escolha o sócio (Michel Méleck Proença ou Igor Pacci Érnica). Baixa o estoque a custo, não gera valor a receber e fica fora das vendas, margens e comissões. Retiradas antigas lançadas como venda são convertidas automaticamente.
 - **Sorteio** (nova plataforma): baixa o estoque a custo, com a identificação do sorteio, e aparece no Painel como **custo do mês**, separado.
