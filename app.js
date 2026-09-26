@@ -21,7 +21,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '21';
+const APP_VERSAO = '21.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -300,7 +300,7 @@ function saldos() {
 function statusConta(c) {
   if (c.status === 'Pago') return 'Pago';
   // Jamble: passou do prazo = disponível para saque (não é atraso, não notifica)
-  if (ehRecJamble(c)) return c.vencimento && c.vencimento < hoje() ? 'Disponível' : 'Aberto';
+  if (ehRecJamble(c)) return liberaJamble(c) <= hoje() ? 'Disponível' : 'Aberto';   // 20 dias após a venda = expectativa de valor liberado
   if (c.vencimento && c.vencimento < hoje()) return 'Vencido';
   return 'Aberto';
 }
@@ -666,6 +666,7 @@ function viewPainel(el) {
           <div class="venc ${faixa(d)}">
             <div class="venc-l"><b>${esc(c.descricao)}</b><small>${c._t === 'receber' ? 'A receber' : 'A pagar'} · ${dataBR(c.vencimento)}${c.contatoId && !String(c.descricao).includes(nomeContato(c.contatoId)) ? ' · ' + esc(nomeContato(c.contatoId)) : ''}</small></div>
             <div class="venc-r"><span class="num strong ${c._t === 'receber' ? 'pos' : 'neg'}">${c._t === 'receber' ? '+' : '−'} ${brl(c.valor)}</span><small class="${d < 0 ? 'neg' : ''}">${quando(d)}</small></div>
+            <button class="btn ${c._t === 'pagar' ? 'primary' : 'ghost'} sm venc-bt" data-baixa-venc="${esc(c._t)}:${esc(c.id)}">${ICON.check}${c._t === 'pagar' ? 'Pagar' : 'Receber'}</button>
           </div>`; }).join('')}</div>
           <div class="venc-tot">${fv !== 'receber' ? `<span>A pagar: <b class="neg">${brl(somaP)}</b></span>` : ''}${fv !== 'pagar' ? `<span>A receber: <b class="pos">${brl(somaR)}</b></span>` : ''}</div>`
           : '<div class="empty">Nada vencendo nos próximos 30 dias 🎉</div>'}
@@ -693,6 +694,7 @@ function viewPainel(el) {
   ligarBarraJamble(el);
   const fcm = $('#fcMes', el); if (fcm) fcm.onchange = e => { UI.fcMes = e.target.value || mesAtual(); render(); };
   $$('[data-fv]', el).forEach(b => b.onclick = () => { UI.fVenc = b.dataset.fv; render(); });
+  $$('[data-baixa-venc]', el).forEach(b => b.onclick = () => { const [t, id] = b.dataset.baixaVenc.split(':'); const c = Store.data[t].find(x => x.id === id); if (c) formBaixa(t, c); });
 }
 
 /* Fluxo de caixa: o que entrou e saiu de verdade (baixas), e a posição da loja hoje */
@@ -2087,7 +2089,7 @@ function viewContas(tipo) {
           <td class="wrap">${esc(nomeContato(c.contatoId))}</td>
           <td class="muted">${esc(c.categoria)}</td>
           <td class="r strong">${brl(c.valor)}</td>
-          <td><span class="badge ${s === 'Pago' ? 'green' : s === 'Vencido' ? 'red' : s === 'Disponível' ? '' : 'amber'}" ${s === 'Disponível' ? 'title="Jamble: liberado para saque"' : ''}>${s === 'Pago' ? (R ? 'Recebido' : 'Pago') : s}</span></td>
+          <td><span class="badge ${s === 'Pago' ? 'green' : s === 'Vencido' ? 'red' : s === 'Disponível' ? '' : 'amber'}" ${s === 'Disponível' ? 'title="Jamble: já passou de 20 dias da venda"' : ''}>${s === 'Disponível' ? 'Expectativa liberada' : s === 'Pago' ? (R ? 'Recebido' : 'Pago') : s}</span></td>
           <td class="muted">${c.status === 'Pago' ? dataBR(c.pagoEm) + (num(c.valorPago) && num(c.valorPago) !== num(c.valor) ? ' · ' + brl(c.valorPago) : '') : ''}</td>
           <td class="act"><span class="inner">
             ${c.status === 'Pago' ? `<button class="btn ghost sm" data-estorno="${c.id}">${ICON.undo}Estornar</button>` : `<button class="btn ghost sm" data-baixa="${c.id}">${ICON.check}${R ? 'Receber' : 'Pagar'}</button>`}
@@ -2138,7 +2140,7 @@ function formSaqueJamble() {
   if (!J.abertos.length) return toast('Não há valores da Jamble em aberto para sacar', 'err');
   Modal.open({
     title: 'Registrar saque da Jamble', small: true, submit: 'Registrar saque',
-    body: `<div class="saque-saldo"><span>Saldo da Jamble a receber</span><b>${brl(J.saldo)}</b><small>Disponível para saque: <b class="pos">${brl(J.disponivel)}</b> · a liberar: <b>${brl(J.aLiberar)}</b></small></div>
+    body: `<div class="saque-saldo"><span>Saldo da Jamble a receber</span><b>${brl(J.saldo)}</b><small>Expectativa de Valores Liberados - Jamble: <b class="pos">${brl(J.disponivel)}</b> · valores a liberar: <b>${brl(J.aLiberar)}</b></small></div>
       ${J.pend.length ? `<div class="note warn">${J.pend.length} venda(s) da Jamble ainda <b>pendente(s) de confirmação</b> (${brl(J.pendBruto)} líquido) não entram no saldo. Confirme-as em Vendas para que entrem.</div>` : ''}
       <div class="grid g2" style="margin-top:12px">
         ${field('Data do saque', inp('data', hoje(), 'type="date" required'))}
@@ -2157,7 +2159,7 @@ function formSaqueJamble() {
         if (ant && !antManual) $('#sqAntV').value = dec(Math.max(0, v - J.disponivel) * 0.01);
         const tx = r2(num($('#sqTaxa').value) + (ant ? num($('#sqAntV').value) : 0));
         $('#sqPrev', body).innerHTML = v > J.saldo + 0.004 ? `<span class="neg">O valor é maior que o saldo em aberto (${brl(J.saldo)}).</span>`
-          : v > 0 ? `Cai na conta: <b>${brl(v - tx)}</b>${tx ? ` (taxas ${brl(tx)} lançadas como comissão Jamble)` : ''}. Saldo na Jamble depois do saque: <b>${brl(J.saldo - v)}</b>.${v > J.disponivel + 0.004 && !ant ? '<br><span class="neg">O valor passa do disponível — marque “antecipação” se foi antecipado.</span>' : ''}`
+          : v > 0 ? `Cai na conta: <b>${brl(v - tx)}</b>${tx ? ` (taxas ${brl(tx)} lançadas como comissão Jamble)` : ''}. Saldo na Jamble depois do saque: <b>${brl(J.saldo - v)}</b>.${v > J.disponivel + 0.004 && !ant ? '<br><span class="neg">O valor passa da expectativa de valores liberados — marque “antecipação” se foi antecipado.</span>' : ''}`
           : 'Informe o valor que saiu da Jamble (antes da taxa de saque). Ele dá baixa nas vendas mais antigas primeiro.';
       };
       $('#sqAntV').addEventListener('input', () => { antManual = true; prev(); });
@@ -2216,8 +2218,8 @@ function barraJamble(compacto) {
   if (!J.abertos.length && !J.saques.length && !J.pend.length) return '';
   const ult = J.saques[0];
   return `<div class="jamble-bar">
-    <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>disponível <b class="pos">${brl(J.disponivel)}</b> · a liberar <b>${brl(J.aLiberar)}</b>${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
-    <div class="jb-alert">${J.disponivel ? `✓ ${brl(J.disponivel)} disponível para saque` : `✓ nada liberado para saque ainda`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
+    <div class="jb-main"><span class="jb-t">Jamble a receber</span><b>${brl(J.saldo)}</b><small>valores a liberar: <b>${brl(J.aLiberar)}</b>${ult ? ` · último saque ${dataBR(ult.data)} (${brl(ult.valor)})` : ''}</small></div>
+    <div class="jb-alert">${J.disponivel ? `✓ Expectativa de Valores Liberados - Jamble: ${brl(J.disponivel)}` : `✓ nenhuma venda passou de ${JAMBLE_DIAS} dias ainda`}${J.pend.length ? `<br><span class="muted">${J.pend.length} venda(s) pendente(s) de confirmação (${brl(J.pendBruto)}) fora do saldo</span>` : ''}</div>
     <div class="jb-act"><button class="btn accent sm" data-saque>${ICON.down}Registrar saque</button>${compacto ? '' : `<button class="btn ghost sm" data-hist-saque>Histórico</button>`}${compacto && J.disponivel ? `<a class="btn ghost sm" href="#/receber" data-ver-atraso>Ver vendas</a>` : ''}</div>
   </div>`;
 }
@@ -2303,9 +2305,11 @@ function formBaixa(tipo, c) {
     body: `<p style="margin:0 0 14px;font-weight:800">${esc(c.descricao)}<br><span class="muted">Vencimento ${dataBR(c.vencimento)} · ${brl(c.valor)}</span></p>
       <div class="grid g2">
         ${field(R ? 'Recebido em' : 'Pago em', inp('pagoEm', hoje(), 'type="date" required'))}
-        ${field('Valor (com juros/desconto)', inp('valorPago', dec(c.valor), 'inputmode="decimal" required'))}
-      </div>`,
-    onSubmit: fd => { Store.commit([up(tipo, { ...c, status: 'Pago', pagoEm: fd.pagoEm, valorPago: r2(fd.valorPago) })]); toast(R ? 'Recebimento registrado' : 'Pagamento registrado', 'ok'); },
+        ${field(R ? 'Valor recebido (R$)' : 'Valor pago (R$)', inp('valorPago', dec(c.valor), 'inputmode="decimal" required'))}
+      </div>
+      <p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">O valor já vem com o total da parcela. Altere se houver juros, multa ou desconto.</p>`,
+    onSubmit: fd => {
+      if (!(r2(fd.valorPago) > 0)) { toast('Informe o valor', 'err'); return false; } Store.commit([up(tipo, { ...c, status: 'Pago', pagoEm: fd.pagoEm, valorPago: r2(fd.valorPago) })]); toast(R ? 'Recebimento registrado' : 'Pagamento registrado', 'ok'); },
   });
 }
 
@@ -3368,10 +3372,11 @@ function migracaoV19() {
   if (!feito && !A.banco && !A.disp && !A.pend) {
     const base = { contatoId: '', status: 'Aberto', pagoEm: '', valorPago: '', obs: 'Saldo informado na implantação do sistema', criadoEm: agora() };
     add(up('receber', { ...base, id: 'abertura-banco', descricao: 'Saldo inicial da conta bancária', categoria: 'Saldo inicial', vencimento: ABERTURA.data, valor: ABERTURA.banco, status: 'Pago', pagoEm: ABERTURA.data, valorPago: ABERTURA.banco, origem: 'abertura', origemId: '' }));
-    add(up('receber', { ...base, id: 'abertura-jamble-disp', descricao: 'Jamble — saldo disponível para saque (abertura)', categoria: 'Vendas', vencimento: ABERTURA.data, valor: ABERTURA.jambleDisp, origem: 'jamble', origemId: '' }));
+    add(up('receber', { ...base, id: 'abertura-jamble-disp', descricao: 'Jamble — Expectativa de Valores Liberados (abertura)', categoria: 'Vendas', vencimento: ABERTURA.data, valor: ABERTURA.jambleDisp, origem: 'jamble', origemId: '' }));
     add(up('receber', { ...base, id: 'abertura-jamble-pend', descricao: 'Jamble — valores pendentes de liberação (abertura)', categoria: 'Vendas', vencimento: addDias(ABERTURA.data, JAMBLE_DIAS), valor: ABERTURA.jamblePend, origem: 'jamble', origemId: '' }));
   }
   try { localStorage.setItem(LS_ABERT, '1'); } catch (e) {}
+  { const d = Store.data.receber.find(r => r.id === 'abertura-jamble-disp'); if (d && /saldo disponível/.test(d.descricao || '')) add(up('receber', { ...d, descricao: 'Jamble — Expectativa de Valores Liberados (abertura)' })); }
   // retiradas lançadas antes como venda: passam a valer a custo e sem valor a receber
   for (const v of Store.data.vendas.filter(x => ehInterna(x) && Store.data.receber.some(r => r.origem === 'venda' && r.origemId === x.id))) {
     const itens = v.itens.map(i => ({ ...i, valor: num(produto(i.produtoId)?.custo) }));
@@ -3388,7 +3393,7 @@ function formSaldosAbertura() {
     body: `<div class="grid">
       ${field('Data dos saldos', inp('data', A.banco?.pagoEm || ABERTURA.data, 'type="date" required'))}
       ${field('Saldo na conta do banco (R$)', inp('banco', dec(A.banco?.valor ?? ''), 'inputmode="decimal" placeholder="0,00"'))}
-      ${field('Jamble — disponível para saque (R$)', inp('disp', dec(A.disp?.valor ?? ''), `inputmode="decimal" placeholder="0,00" ${ed(A.disp) ? '' : 'disabled'}`))}
+      ${field('Expectativa de Valores Liberados - Jamble (R$)', inp('disp', dec(A.disp?.valor ?? ''), `inputmode="decimal" placeholder="0,00" ${ed(A.disp) ? '' : 'disabled'}`))}
       ${field('Jamble — pendente de liberação (R$)', inp('pend', dec(A.pend?.valor ?? ''), `inputmode="decimal" placeholder="0,00" ${ed(A.pend) ? '' : 'disabled'}`))}
       <p class="muted" style="margin:0;font-size:13px;font-weight:700">Esses valores são o ponto de partida: o saldo em conta do Painel soma o saldo do banco com tudo que for recebido e desconta o que for pago depois. Os saldos da Jamble entram como valor a receber (os saques dão baixa neles primeiro).</p>
     </div>`,
@@ -3397,7 +3402,7 @@ function formSaldosAbertura() {
       const base = { contatoId: '', obs: 'Saldo informado na implantação do sistema', origemId: '' };
       const salvar = (id, r, extra) => { const v = r2(fd[extra.k]); if (fd[extra.k] === undefined) return; if (!v) { if (r) ops.push(del('receber', id)); return; } ops.push(up('receber', { ...base, criadoEm: agora(), ...(r || {}), ...extra.rec(v), id })); };
       salvar('abertura-banco', A.banco, { k: 'banco', rec: v => ({ descricao: 'Saldo inicial da conta bancária', categoria: 'Saldo inicial', vencimento: data, valor: v, status: 'Pago', pagoEm: data, valorPago: v, origem: 'abertura' }) });
-      salvar('abertura-jamble-disp', A.disp, { k: 'disp', rec: v => ({ descricao: 'Jamble — saldo disponível para saque (abertura)', categoria: 'Vendas', vencimento: data, valor: v, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'jamble' }) });
+      salvar('abertura-jamble-disp', A.disp, { k: 'disp', rec: v => ({ descricao: 'Jamble — Expectativa de Valores Liberados (abertura)', categoria: 'Vendas', vencimento: data, valor: v, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'jamble' }) });
       salvar('abertura-jamble-pend', A.pend, { k: 'pend', rec: v => ({ descricao: 'Jamble — valores pendentes de liberação (abertura)', categoria: 'Vendas', vencimento: addDias(data, JAMBLE_DIAS), valor: v, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'jamble' }) });
       Store.commit(ops); toast('Saldos salvos', 'ok');
     },
@@ -3410,7 +3415,7 @@ function cardSaldos() {
       <h3 style="justify-content:space-between">Saldos de abertura <button class="btn ghost sm" id="edSaldos">${ICON.edit}Editar</button></h3>
       <ul class="list">
         <li><span class="l">Conta do banco<span class="s">saldo em ${dataBR(A.banco?.pagoEm || ABERTURA.data)} — base do saldo em conta do Painel</span></span><b>${v(A.banco)}</b></li>
-        <li><span class="l">Jamble — disponível para saque</span><b>${v(A.disp)}</b></li>
+        <li><span class="l">Expectativa de Valores Liberados - Jamble</span><b>${v(A.disp)}</b></li>
         <li><span class="l">Jamble — pendente de liberação<span class="s">libera em ${dataBR(A.pend?.vencimento || '')}</span></span><b>${v(A.pend)}</b></li>
       </ul>
     </div>`;

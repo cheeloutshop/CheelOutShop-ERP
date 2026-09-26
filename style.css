@@ -626,3 +626,9 @@ td.c-foto { width: 56px; }
 @media (max-width: 800px) { .hist-kpis { grid-template-columns: 1fr 1fr; } }
 tr.muted td { color: var(--ink-3); }
 .ac-compra { min-width: 200px; }
+/* v21.1 — pagar direto nos vencimentos */
+.venc-l { flex: 1; min-width: 0; }
+.venc-bt { flex: none; padding: 6px 10px; }
+@media (max-width: 560px) { .venc { flex-wrap: wrap; } .venc-bt { width: 100%; justify-content: center; } }
+.venc-l b { white-space: normal; overflow: visible; text-overflow: clip; display: block; }
+.jb-alert { min-width: 220px; }
