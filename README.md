@@ -141,6 +141,11 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Balanço de insumos** todo mês (aviso no Painel): consumo = saldo do sistema − contagem; custo do consumo ÷ pedidos faturados no período = **custo de insumos por pedido**.
 - **Atualize o script** (nova versão da implantação): abas `insumoItens`, `insumoMovs` e `insumoBals` criadas sozinhas.
 
+## v25 — dashboard e custo médio dos insumos
+
+- **Sistema › Dashboard**: resultado do mês (faturamento, lucro bruto e líquido, margens), margem por produto, mais vendidos, melhores clientes, comissão por canal, consignados, insumos, sorteios, retiradas, fornecedores e tempo médio em estoque.
+- Insumos passam a usar **custo médio ponderado** (mesma regra dos produtos).
+
 ## Como os dados se ligam
 
 ```

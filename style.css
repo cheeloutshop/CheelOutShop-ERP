@@ -671,3 +671,29 @@ tr.muted td { color: var(--ink-3); }
 
 /* ---------- v24 — insumos ---------- */
 .ins-alerta { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; background: #EEF6FF; border: 1.5px solid #C9DDFB; border-left: 6px solid var(--blue-600); border-radius: var(--radius); padding: 12px 18px; margin-bottom: 16px; font-size: 14px; font-weight: 700; color: var(--blue-800); }
+
+/* ---------- v25 — dashboard ---------- */
+#topActions #dbMes { width: auto; padding: 7px 10px; font-weight: 800; }
+.db-delta { display: inline-block; margin-left: 4px; font-weight: 800; }
+.db-dre { list-style: none; margin: 0; padding: 0; }
+.db-dre li { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed var(--line); font-weight: 700; font-size: 14px; }
+.db-dre li span { display: flex; flex-direction: column; min-width: 0; }
+.db-dre li small { font-size: 11.5px; font-weight: 700; color: var(--ink-3); }
+.db-dre li b { white-space: nowrap; }
+.db-dre li.menos b { color: var(--red); } .db-dre li.menos > span { color: var(--ink-2); }
+.db-dre li.sub { background: #F7F9FC; padding: 8px 10px; border-radius: 8px; border: 0; margin: 4px 0; }
+.db-dre li.tot { font-size: 15.5px; } .db-dre li.tot b { color: var(--blue-800); font-size: 17px; }
+.db-dre li.ruim b { color: var(--red); }
+.db-bar { flex: 1; min-width: 40px; height: 8px; background: #EEF2F9; border-radius: 4px; overflow: hidden; display: inline-block; }
+.db-bar i { display: block; height: 100%; background: var(--blue-600); border-radius: 4px; }
+.db-cel { display: flex; align-items: center; gap: 8px; min-width: 180px; } .db-cel span { white-space: nowrap; font-weight: 800; font-size: 13px; }
+.db-rank { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.db-rank li { display: grid; grid-template-columns: 22px minmax(0, 1.4fr) 1fr auto; gap: 10px; align-items: center; font-size: 13.5px; font-weight: 700; }
+.db-rank .n { width: 22px; height: 22px; border-radius: 50%; background: var(--blue-50); color: var(--blue-700); display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 900; }
+.db-rank .t { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; } .db-rank small { font-size: 11.5px; color: var(--ink-3); }
+.db-rank b { white-space: nowrap; }
+.db-big { font-size: 30px; font-weight: 900; color: var(--blue-800); display: flex; flex-direction: column; } .db-big small { font-size: 12px; font-weight: 700; color: var(--ink-3); }
+@media (max-width: 640px) { .db-rank li { grid-template-columns: 22px 1fr auto; } .db-rank .db-bar { display: none; } }
+.db-tab table { min-width: 0 !important; width: 100%; }
+.db-tab th, .db-tab td { padding: 9px 8px !important; font-size: 13px; }
+.db-tab td:first-child { white-space: normal; }

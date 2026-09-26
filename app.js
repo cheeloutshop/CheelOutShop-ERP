@@ -24,7 +24,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '24.1';
+const APP_VERSAO = '25';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -609,6 +609,7 @@ const ROUTES = {
   estoque:  { t: 'Controle de estoque', s: 'Saldos, movimentações e balanço', fn: viewEstoque },
   receber:  { t: 'Contas a receber', s: 'Recebimentos de clientes', fn: () => viewContas('receber') },
   pagar:    { t: 'Contas a pagar', s: 'Pagamentos a fornecedores e despesas', fn: () => viewContas('pagar') },
+  dashboard: { t: 'Dashboard', s: 'Resultado da empresa mês a mês', fn: viewDashboard },
   config:   { t: 'Configurações', s: 'Plataformas, consignação e backup', fn: viewConfig },
   avancado: { t: 'Configurações avançadas', s: 'Conexão, acesso, importação e dados de exemplo', fn: viewConfigAvancado },
 };
@@ -3421,10 +3422,25 @@ function saldosInsumos() {
   for (const m of Store.data.insumoMovs) if (depoisDoBal(m, bal)) s[m.insumoId] = (s[m.insumoId] || 0) + (m.tipo === 'saida' ? -1 : 1) * num(m.quantidade);
   return s;
 }
-/* custo por unidade de uso: última compra (entrada com custo); senão o do cadastro */
+/* Custo médio ponderado do insumo — mesma regra dos produtos:
+   compra nova entra na média só com o que ainda está em estoque; estoque zerado → custo da compra nova;
+   balanço só corrige a quantidade (não muda o custo médio). */
 function custoInsumo(id) {
-  const m = Store.data.insumoMovs.filter(x => x.insumoId === id && x.tipo === 'entrada' && num(x.custoUnit) > 0).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0];
-  return m ? num(m.custoUnit) : num(insumoItem(id)?.custo);
+  const ev = [
+    ...Store.data.insumoMovs.filter(m => m.insumoId === id).map(m => ({ k: (m.data || '') + (m.criadoEm || ''), m })),
+    ...Store.data.insumoBals.map(b => ({ k: (b.data || '') + (b.criadoEm || ''), b, it: (b.itens || []).find(i => i.insumoId === id) })).filter(x => x.it),
+  ].sort((a, b) => a.k.localeCompare(b.k));
+  let qtd = 0, med = 0, teve = false;
+  const base = num(insumoItem(id)?.custo);
+  for (const e of ev) {
+    if (e.b) { qtd = num(e.it.contado); if (!teve && base) { med = base; teve = true; } continue; }
+    const q = num(e.m.quantidade), cu = num(e.m.custoUnit);
+    if (e.m.tipo === 'saida') { qtd -= q; continue; }
+    if (cu > 0) { med = qtd > 0 && teve ? (qtd * med + q * cu) / (qtd + q) : cu; teve = true; }
+    else if (!teve && base) { med = base; teve = true; }
+    qtd += q;
+  }
+  return teve ? Math.round(med * 1e4) / 1e4 : base;
 }
 /* compra de insumos RECEBIDA → entrada no estoque de insumos (cadastra o insumo se ainda não existir) */
 function opsEstoqueInsumo(c) {
@@ -3460,12 +3476,12 @@ function viewEstoqueInsumos(el) {
     ${pend ? `<div class="note warn" style="margin:0 0 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span>${pend === 'inicial' ? '📦 Lance as <b>quantidades de insumos que vocês têm hoje</b> (primeiro balanço). A partir do próximo balanço o sistema calcula o custo de insumos por pedido.' : `📦 <b>Balanço mensal de insumos pendente</b> — o último foi em ${dataBR(bal.data)}.`}</span><button class="btn accent sm" id="insBal2">Fazer balanço agora</button></div>` : ''}
     <div class="kpis">
       <div class="card kpi blue"><div class="lbl">Insumos cadastrados</div><div class="val">${Store.data.insumoItens.filter(i => i.ativo !== 'nao').length}</div><div class="hint">${itens.filter(i => num(i.estoqueMin) && (sal[i.id] || 0) <= num(i.estoqueMin)).length} abaixo do mínimo</div></div>
-      <div class="card kpi"><div class="lbl">Valor em estoque de insumos</div><div class="val">${brl(valor)}</div><div class="hint">pelo último custo de compra</div></div>
+      <div class="card kpi"><div class="lbl">Valor em estoque de insumos</div><div class="val">${brl(valor)}</div><div class="hint">pelo custo médio</div></div>
       <div class="card kpi green"><div class="lbl">Custo de insumos por pedido</div><div class="val">${comCusto.length ? brl(comCusto[0].custoPedido) : '—'}</div><div class="hint">${comCusto.length ? `${num(comCusto[0].pedidos)} pedido(s) · balanço de ${dataBR(comCusto[0].data)}` : 'aparece a partir do 2º balanço'}</div></div>
       <div class="card kpi red"><div class="lbl">Último balanço</div><div class="val">${bal ? dataBR(bal.data) : '—'}</div><div class="hint">${bal ? `consumo ${brl(bal.custoTotal)}` : 'nenhum ainda'}</div></div>
     </div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Insumo</th><th>Unidade</th><th class="r">Saldo</th><th class="r">Mínimo</th><th class="r">Custo un.</th><th class="r">Valor</th><th></th></tr></thead>
+      <thead><tr><th>Insumo</th><th>Unidade</th><th class="r">Saldo</th><th class="r">Mínimo</th><th class="r">Custo médio</th><th class="r">Valor</th><th></th></tr></thead>
       <tbody>${itens.length ? itens.map(i => { const sd = sal[i.id] || 0, mn = num(i.estoqueMin); return `<tr>
         <td class="wrap strong">${esc(i.nome)} ${i.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}</td><td>${esc(i.unidade || 'UN')}</td>
         <td class="r strong"><span class="badge ${sd <= 0 ? 'red' : mn && sd <= mn ? 'amber' : 'green'}">${qtdFmt(sd)}</span></td><td class="r muted">${mn ? qtdFmt(mn) : '—'}</td>
@@ -3496,7 +3512,7 @@ function formInsumoItem(i) {
       ${field('Estoque mínimo', inp('estoqueMin', i.estoqueMin, 'inputmode="decimal" placeholder="0"'))}
       ${field('Situação', `<select name="ativo">${opt([['sim', 'Ativo'], ['nao', 'Inativo']], i.ativo)}</select>`)}
       ${novo ? field('Quantidade que vocês têm hoje', inp('qtdIni', '', 'inputmode="decimal" placeholder="opcional"'), 'span2') : ''}
-    </div><p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">O custo é atualizado sozinho pela última compra de insumos recebida.</p>`,
+    </div><p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">O custo é o custo médio: cada compra de insumos recebida entra na média com o que ainda está em estoque.</p>`,
     onSubmit: fd => {
       const nome = fd.nome.trim(); if (!nome) return false;
       const dup = Store.data.insumoItens.find(x => x.id !== i.id && nomeChave(x.nome) === nomeChave(nome));
@@ -3575,6 +3591,152 @@ function verBalancoInsumos(b) {
       ${(b.itens || []).map(i => `<tr><td class="wrap">${esc(insumoItem(i.insumoId)?.nome || i.nome)}</td><td class="r">${qtdFmt(i.esperado)}</td><td class="r strong">${qtdFmt(i.contado)}</td><td class="r">${qtdFmt(i.usado)}</td><td class="r">${brl(i.custoUnit)}</td><td class="r">${brl(i.custo)}</td></tr>`).join('')}
       </tbody></table></div>`,
   });
+}
+
+/* =========================================================
+   DASHBOARD — resultado do mês
+   ========================================================= */
+/* dias em estoque de cada unidade vendida (PEPS: a unidade mais antiga sai primeiro) */
+function diasEmEstoque(mes) {
+  const porProd = {}, res = {};
+  for (const m of Store.data.movimentos) (porProd[m.produtoId] = porProd[m.produtoId] || []).push(m);
+  const dias = (a, b) => Math.max(0, Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5));
+  for (const [pid, lista] of Object.entries(porProd)) {
+    lista.sort((a, b) => ((a.data || '') + (a.criadoEm || '')).localeCompare((b.data || '') + (b.criadoEm || '')));
+    const lotes = [];
+    for (const m of lista) {
+      const q = num(m.quantidade); if (!q || m.origem === 'ajuste-custo') continue;
+      if (m.tipo !== 'saida') { lotes.push({ data: m.data, q }); continue; }
+      let falta = q, soma = 0, un = 0;
+      while (falta > 1e-9 && lotes.length) { const l = lotes[0], t = Math.min(l.q, falta); soma += t * dias(l.data, m.data); un += t; l.q -= t; falta -= t; if (l.q <= 1e-9) lotes.shift(); }
+      if (m.origem === 'venda' && (m.data || '').startsWith(mes) && un) { const r = res[pid] = res[pid] || { soma: 0, un: 0 }; r.soma += soma; r.un += un; }
+    }
+  }
+  return res;
+}
+function dadosDashboard(mes) {
+  const d = Store.data, na = x => (x.data || '').startsWith(mes);
+  const vendas = d.vendas.filter(v => vendaReal(v) && na(v));
+  const custoMov = {};
+  for (const m of d.movimentos) if (m.tipo === 'saida' && m.origemId) { const k = m.origemId + '|' + m.produtoId, c = custoMov[k] = custoMov[k] || { q: 0, v: 0 }; c.q += num(m.quantidade); c.v += num(m.quantidade) * num(m.custoUnit); }
+  const prods = {}, clientes = {}, canais = {}, consig = { fat: 0, repasse: 0, comissao: 0, n: 0 };
+  let fat = 0, cmv = 0;
+  for (const v of vendas) {
+    const bruto = v.itens.reduce((t, i) => t + num(i.qtd) * num(i.valor), 0), fator = bruto ? num(v.total) / bruto : 1;
+    let cmvV = 0;
+    for (const it of v.itens) {
+      const q = num(it.qtd), rec = q * num(it.valor) * fator, cm = custoMov[v.id + '|' + it.produtoId];
+      const cu = cm && cm.q ? cm.v / cm.q : num(produto(it.produtoId)?.custo), custo = q * cu;
+      cmvV += custo;
+      const k = it.produtoId || 'sem:' + (it.descricao || '');
+      const pr = prods[k] = prods[k] || { id: it.produtoId, nome: itemNome(it), q: 0, fat: 0, custo: 0 };
+      pr.q += q; pr.fat += rec; pr.custo += custo;
+      if (produto(it.produtoId)?.consigId) { const c = calcRepasse(v, it); consig.fat += rec; consig.repasse += c ? c.repasse : custo; consig.comissao += c ? c.comissaoV : 0; consig.n += q; }
+    }
+    fat += num(v.total); cmv += cmvV;
+    const ck = v.clienteId || '—', cl = clientes[ck] = clientes[ck] || { nome: nomeContato(v.clienteId) || 'Consumidor final', n: 0, fat: 0 };
+    cl.n++; cl.fat += num(v.total);
+    const ca = canais[v.canal || 'Sem plataforma'] = canais[v.canal || 'Sem plataforma'] || { n: 0, fat: 0, com: 0 };
+    ca.n++; ca.fat += num(v.total); ca.com += num(v.comissao);
+  }
+  const taxasSaque = taxasSaqueMes(mes);
+  if (taxasSaque) { const j = Object.keys(canais).find(ehCanalJamble) || 'Jamble'; (canais[j] = canais[j] || { n: 0, fat: 0, com: 0 }).com += taxasSaque; canais[j].saque = taxasSaque; }
+  const comissoes = Object.values(canais).reduce((t, c) => t + c.com, 0);
+  // saídas sem venda (a custo)
+  const custoSaidas = orig => d.movimentos.filter(m => m.tipo === 'saida' && m.origem === orig && na(m));
+  const sorteios = custoSaidas('sorteio').reduce((t, m) => t + num(m.quantidade) * num(m.custoUnit), 0);
+  const retiradas = {};
+  for (const m of custoSaidas('retirada')) { const v = d.vendas.find(x => x.id === m.origemId), k = nomeContato(v?.clienteId) || 'Sócio não informado'; retiradas[k] = (retiradas[k] || 0) + num(m.quantidade) * num(m.custoUnit); }
+  const totRet = Object.values(retiradas).reduce((a, b) => a + b, 0);
+  // insumos: custo por pedido do último balanço com cálculo × pedidos do mês
+  const fimMes = mes + '-31';
+  const balRef = [...d.insumoBals].filter(b => num(b.pedidos) > 0 && (b.data || '') <= fimMes).sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0];
+  const insumos = balRef ? num(balRef.custoPedido) * vendas.length : 0;
+  // despesas operacionais (competência = vencimento no mês; compras de mercadoria, repasses e taxas já estão acima)
+  const despLista = d.pagar.filter(c => (c.vencimento || '').startsWith(mes) && !['compra', 'consig', 'saque', 'insumo'].includes(c.origem) && c.categoria !== 'Fornecedores');
+  const despCat = {}; despLista.forEach(c => { const k = c.categoria || 'Outros'; despCat[k] = (despCat[k] || 0) + num(c.valor); });
+  const despesas = despLista.reduce((t, c) => t + num(c.valor), 0);
+  // fornecedores
+  const forn = {};
+  for (const c of d.compras.filter(x => x.status !== 'Cancelado' && x.formaPgto !== INTEGRACAO && na(x))) { const f = forn[c.fornecedorId || '—'] = forn[c.fornecedorId || '—'] || { nome: nomeContato(c.fornecedorId) || '—', n: 0, tot: 0, tipo: new Set() }; f.n++; f.tot += num(c.total); f.tipo.add('mercadoria'); }
+  for (const c of d.insumos.filter(x => x.status !== 'Cancelado' && na(x))) { const f = forn[c.fornecedorId || '—'] = forn[c.fornecedorId || '—'] || { nome: nomeContato(c.fornecedorId) || '—', n: 0, tot: 0, tipo: new Set() }; f.n++; f.tot += num(c.total); f.tipo.add('insumos'); }
+  // tempo em estoque
+  const de = diasEmEstoque(mes); let sd = 0, su = 0;
+  Object.values(de).forEach(x => { sd += x.soma; su += x.un; });
+  Object.values(prods).forEach(pr => { const x = pr.id && de[pr.id]; pr.dias = x && x.un ? x.soma / x.un : null; });
+  const lucroBruto = fat - cmv, liquido = lucroBruto - comissoes - insumos - sorteios - despesas;
+  return { vendas, fat, cmv, lucroBruto, comissoes, insumos, balRef, sorteios, retiradas, totRet, despesas, despCat, liquido, aposRet: liquido - totRet,
+    prods: Object.values(prods), clientes: Object.values(clientes), canais, consig, forn: Object.values(forn), diasMedio: su ? sd / su : null };
+}
+function viewDashboard(el) {
+  const mes = UI.dbMes || mesAtual();
+  const [yy, mm] = mes.split('-').map(Number);
+  const mesAnt = new Date(yy, mm - 2, 1).toLocaleDateString('sv-SE').slice(0, 7), mesProx = new Date(yy, mm, 1).toLocaleDateString('sv-SE').slice(0, 7);
+  const D = dadosDashboard(mes), A = dadosDashboard(mesAnt);
+  const pc = (a, b) => b ? fmtPct(a / b * 100) + '%' : '—';
+  const delta = (a, b) => { if (!b) return ''; const x = (a - b) / Math.abs(b) * 100; return `<span class="db-delta ${x >= 0 ? 'pos' : 'neg'}">${x >= 0 ? '▲' : '▼'} ${fmtPct(Math.abs(x))}% vs ${MESES[mm - 2 < 0 ? 11 : mm - 2]}</span>`; };
+  const barra = (v, max) => `<span class="db-bar"><i style="width:${max > 0 ? Math.max(2, v / max * 100) : 0}%"></i></span>`;
+  const top = (l, k, n = 10) => [...l].sort((a, b) => b[k] - a[k]).slice(0, n);
+  const vazio = msg => `<div class="empty" style="padding:18px">${msg}</div>`;
+  const prodsFat = top(D.prods, 'fat', 50), maxPF = Math.max(0, ...prodsFat.map(p => p.fat));
+  const prodsQtd = top(D.prods, 'q'), maxPQ = Math.max(0, ...prodsQtd.map(p => p.q));
+  const cli = top(D.clientes, 'fat'), maxC = Math.max(0, ...cli.map(c => c.fat));
+  const forn = top(D.forn, 'tot'), maxF = Math.max(0, ...forn.map(f => f.tot));
+  const canais = Object.entries(D.canais).sort((a, b) => b[1].fat - a[1].fat);
+  const linha = (l, v, cls = '', sub = '') => `<li class="${cls}"><span>${l}${sub ? `<small>${sub}</small>` : ''}</span><b>${v}</b></li>`;
+  actions(`<button class="btn ghost" id="dbAnt" title="Mês anterior">‹</button><input type="month" id="dbMes" value="${esc(mes)}"><button class="btn ghost" id="dbProx" title="Próximo mês">›</button>`);
+  el.innerHTML = `
+    <div class="kpis">
+      <div class="card kpi blue"><div class="lbl">Faturamento</div><div class="val">${brl(D.fat)}</div><div class="hint">${D.vendas.length} venda(s) · ticket ${brl(D.vendas.length ? D.fat / D.vendas.length : 0)} ${delta(D.fat, A.fat)}</div></div>
+      <div class="card kpi"><div class="lbl">Lucro bruto</div><div class="val">${brl(D.lucroBruto)}</div><div class="hint">margem média <b>${pc(D.lucroBruto, D.fat)}</b> ${delta(D.lucroBruto, A.lucroBruto)}</div></div>
+      <div class="card kpi green"><div class="lbl">Lucro líquido</div><div class="val ${D.liquido < 0 ? 'neg' : ''}">${brl(D.liquido)}</div><div class="hint">margem líquida <b>${pc(D.liquido, D.fat)}</b> ${delta(D.liquido, A.liquido)}</div></div>
+      <div class="card kpi red"><div class="lbl">Resultado após retiradas</div><div class="val ${D.aposRet < 0 ? 'neg' : ''}">${brl(D.aposRet)}</div><div class="hint">retiradas dos sócios ${brl(D.totRet)}</div></div>
+    </div>
+    <div class="two even">
+      <div class="card"><h3>Resultado de ${MESES[mm - 1]}/${yy}</h3>
+        <ul class="db-dre">
+          ${linha('Faturamento (vendas)', brl(D.fat), 'tot')}
+          ${linha('− Custo dos produtos vendidos', brl(D.cmv), 'menos', 'custo médio · consignados = repasse ao dono')}
+          ${linha('= Lucro bruto', brl(D.lucroBruto), 'sub', 'margem ' + pc(D.lucroBruto, D.fat))}
+          ${linha('− Comissões das plataformas', brl(D.comissoes), 'menos', 'inclui taxas de saque')}
+          ${linha('− Insumos', brl(D.insumos), 'menos', D.balRef ? `${brl(D.balRef.custoPedido)} por pedido × ${D.vendas.length} (balanço de ${dataBR(D.balRef.data)})` : 'sem balanço de insumos ainda')}
+          ${linha('− Sorteios (custo)', brl(D.sorteios), 'menos')}
+          ${linha('− Despesas', brl(D.despesas), 'menos', Object.entries(D.despCat).map(([k, v]) => `${esc(k)} ${brl(v)}`).join(' · ') || 'contas a pagar do mês (sem compras de mercadoria)')}
+          ${linha('= Lucro líquido', brl(D.liquido), 'sub ' + (D.liquido < 0 ? 'ruim' : ''), 'margem ' + pc(D.liquido, D.fat))}
+          ${linha('− Retiradas dos sócios (produtos a custo)', brl(D.totRet), 'menos', Object.entries(D.retiradas).map(([k, v]) => `${esc(k.split(' ')[0])} ${brl(v)}`).join(' · '))}
+          ${linha('= Resultado após retiradas', brl(D.aposRet), 'tot ' + (D.aposRet < 0 ? 'ruim' : ''))}
+        </ul>
+      </div>
+      <div class="card"><h3>Comissão por canal de venda</h3>
+        ${canais.length ? `<div class="table-wrap db-tab" style="box-shadow:none;border:1.5px solid var(--line)"><table><thead><tr><th>Canal</th><th class="r">Faturamento</th><th class="r">Comissão</th><th class="r">%</th></tr></thead><tbody>
+          ${canais.map(([k, c]) => `<tr><td class="strong">${esc(k)}<br><small class="muted">${c.n} venda(s)${c.saque ? ` · inclui ${brl(c.saque)} de taxa de saque` : ''}</small></td><td class="r">${brl(c.fat)}</td><td class="r neg">${brl(c.com)}</td><td class="r strong">${pc(c.com, c.fat)}</td></tr>`).join('')}
+          </tbody><tfoot><tr><td>Total</td><td class="r">${brl(D.fat)}</td><td class="r">${brl(D.comissoes)}</td><td class="r">${pc(D.comissoes, D.fat)}</td></tr></tfoot></table></div>` : vazio('Nenhuma venda neste mês.')}
+        <div class="section-t">Vendas comissionadas (consignado)</div>
+        ${D.consig.n ? `<ul class="db-dre">${linha('Vendido de consignados', brl(D.consig.fat), '', `${qtdFmt(D.consig.n)} un`)}${linha('− Repasse aos donos', brl(D.consig.repasse), 'menos')}${linha('= Lucro das vendas comissionadas', brl(D.consig.fat - D.consig.repasse), 'sub', `comissão da loja ${brl(D.consig.comissao)} · margem ${pc(D.consig.fat - D.consig.repasse, D.consig.fat)}`)}</ul>` : vazio('Nenhuma venda de consignado neste mês.')}
+        <div class="section-t">Tempo médio do produto no estoque</div>
+        <div class="db-big">${D.diasMedio == null ? '—' : Math.round(D.diasMedio) + ' dias'}<small>da entrada no estoque até a venda (as unidades mais antigas saem primeiro)</small></div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px"><h3>Margem por produto</h3>
+      ${prodsFat.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table><thead><tr><th>Produto</th><th class="r">Qtd</th><th>Faturamento</th><th class="r">Custo</th><th class="r">Lucro</th><th class="r">Margem</th><th class="r">Dias em estoque</th></tr></thead><tbody>
+        ${prodsFat.map(p => `<tr><td class="wrap strong">${esc(p.nome)}</td><td class="r">${qtdFmt(p.q)}</td><td><div class="db-cel">${barra(p.fat, maxPF)}<span>${brl(p.fat)}</span></div></td><td class="r">${brl(p.custo)}</td><td class="r ${p.fat - p.custo < 0 ? 'neg' : 'pos'}">${brl(p.fat - p.custo)}</td><td class="r strong">${pc(p.fat - p.custo, p.fat)}</td><td class="r">${p.dias == null ? '—' : Math.round(p.dias)}</td></tr>`).join('')}
+      </tbody></table></div>` : vazio('Nenhuma venda neste mês.')}
+    </div>
+    <div class="two even">
+      <div class="card"><h3>Produtos mais vendidos</h3>${prodsQtd.length ? `<ul class="db-rank">${prodsQtd.map((p, i) => `<li><span class="n">${i + 1}</span><span class="t">${esc(p.nome)}</span>${barra(p.q, maxPQ)}<b>${qtdFmt(p.q)} un</b></li>`).join('')}</ul>` : vazio('Nenhuma venda neste mês.')}</div>
+      <div class="card"><h3>Clientes que mais compraram</h3>${cli.length ? `<ul class="db-rank">${cli.map((c, i) => `<li><span class="n">${i + 1}</span><span class="t">${esc(c.nome)}<small>${c.n} compra(s)</small></span>${barra(c.fat, maxC)}<b>${brl(c.fat)}</b></li>`).join('')}</ul>` : vazio('Nenhuma venda neste mês.')}</div>
+    </div>
+    <div class="two even">
+      <div class="card"><h3>Fornecedores que mais compramos</h3>${forn.length ? `<ul class="db-rank">${forn.map((f, i) => `<li><span class="n">${i + 1}</span><span class="t">${esc(f.nome)}<small>${f.n} pedido(s) · ${[...f.tipo].join(' e ')}</small></span>${barra(f.tot, maxF)}<b>${brl(f.tot)}</b></li>`).join('')}</ul>` : vazio('Nenhuma compra neste mês.')}</div>
+      <div class="card"><h3>Custos fora das vendas</h3><ul class="db-dre">
+        ${linha('Insumos (estimado)', brl(D.insumos), '', D.balRef ? `${brl(D.balRef.custoPedido)} por pedido` : 'faça o balanço de insumos')}
+        ${linha('Sorteios', brl(D.sorteios), '', 'produtos a custo')}
+        ${Object.entries(D.retiradas).map(([k, v]) => linha('Retirada — ' + esc(k), brl(v), '', 'produtos a custo')).join('') || linha('Retiradas dos sócios', brl(0))}
+      </ul></div>
+    </div>`;
+  const ir = m => { UI.dbMes = m; render(); };
+  $('#dbMes').onchange = e => ir(e.target.value || mesAtual());
+  $('#dbAnt').onclick = () => ir(mesAnt); $('#dbProx').onclick = () => ir(mesProx);
 }
 
 function viewInsumos(el) {
