@@ -126,6 +126,14 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Histórico do produto** (ícone de relógio em Produtos): entradas por fornecedor e vendas com custo médio, lucro e markup.
 - **Atualize o script da planilha** (nova versão da implantação): coluna nova `precoSugerido`, criada sozinha.
 
+## v21 — mais rápido
+
+- Login já traz os dados (uma chamada a menos) e as leituras seguintes trazem **só as abas que mudaram**.
+- O script guarda o conteúdo das abas em cache e um agendamento a cada 10 min mantém tudo pronto.
+- Editar a planilha à mão continua funcionando: a aba editada é marcada e o site busca de novo.
+- `sw.js`: o site fica guardado no aparelho e abre na hora; pode ser **instalado como app** (Chrome/Edge: ícone de instalar na barra de endereço; iPhone: Compartilhar › Adicionar à Tela de Início).
+- **Atualize o script** (nova versão da implantação) e rode `setup` uma vez para criar o agendamento.
+
 ## Como os dados se ligam
 
 ```
@@ -143,6 +151,7 @@ index.html          → páginas, menu e tela de login
 config.js           → URL do Apps Script e e-mail de acesso (edite aqui)
 style.css           → visual (cores da marca)
 app.js              → toda a lógica do ERP e do login
+sw.js               → guarda o site no aparelho (abre mais rápido / instalar como app)
 favicon*.png / icon-*.png / apple-touch-icon.png / manifest.webmanifest → ícones do site e do app no celular
 logo.png            → logo da Cheel Out Shop (menu, login, animação e impressão)
 apps-script/Code.gs → API + login (cole no Apps Script da planilha)

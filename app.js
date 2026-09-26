@@ -3,6 +3,10 @@
    Front-end estático (GitHub Pages) + Google Sheets via Apps Script
    ========================================================= */
 'use strict';
+/* instala o "app" no aparelho (abre na hora e pode ser instalado na tela inicial) */
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
 
 const COLS = {
   produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos', 'consigId', 'consigImposto', 'consigComissao', 'precoSugerido'],
@@ -17,7 +21,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '20';
+const APP_VERSAO = '21';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -26,6 +30,7 @@ const LS_QUEUE = 'cheel_erp_queue_v1';
 const LS_SESSION = 'cheel_erp_session_v1';
 const LS_USERS = 'cheel_erp_users_v1';
 const LS_MIGRAR = 'cheel_erp_migrar_v1';
+const LS_VER = 'cheel_erp_versoes_v1';   // versão de cada aba já baixada (sincroniza só o que mudou)
 const ERP = window.ERP_CONFIG || {};
 const EMAIL_PADRAO = String(ERP.email || 'cheeloutshop@gmail.com').trim().toLowerCase();
 
@@ -104,6 +109,7 @@ const Store = {
   data: Object.fromEntries(Object.keys(COLS).map(k => [k, []])),
   cfg: { url: '' },
   queue: [],
+  versoes: {},
 
   init() {
     let salvo = {};
@@ -115,6 +121,7 @@ const Store = {
       if (d) for (const k of Object.keys(COLS)) this.data[k] = (d[k] || []).map(r => this.normalize(k, r));
     } catch (e) {}
     try { this.queue = JSON.parse(localStorage.getItem(LS_QUEUE) || '[]'); } catch (e) { this.queue = []; }
+    try { this.versoes = JSON.parse(localStorage.getItem(LS_VER) || '{}') || {}; } catch (e) { this.versoes = {}; }
     // Se este navegador trabalhava no modo local e agora há uma planilha configurada (ex.: URL colada no config.js),
     // guarda os dados locais para oferecer o envio à planilha depois do login — nada se perde.
     try {
@@ -139,7 +146,20 @@ const Store = {
     try {
       localStorage.setItem(LS_DATA, JSON.stringify(this.data));
       localStorage.setItem(LS_QUEUE, JSON.stringify(this.queue));
+      localStorage.setItem(LS_VER, JSON.stringify(this.versoes || {}));
     } catch (e) {}
+  },
+  /* aplica o que veio da planilha: formato novo (só as abas que mudaram) ou antigo (tudo) */
+  aplicarRemoto(r) {
+    if (r && r.versoes && r.dados) {
+      for (const k of Object.keys(r.dados)) if (COLS[k]) this.data[k] = (r.dados[k] || []).map(x => this.normalize(k, x));
+      this.versoes = { ...r.versoes };
+    } else {
+      for (const k of Object.keys(COLS)) this.data[k] = ((r || {})[k] || []).map(x => this.normalize(k, x));
+      this.versoes = {};
+    }
+    this.ultimaLeitura = Date.now();
+    this.saveCache();
   },
   async api(payload) {
     let res;
@@ -183,8 +203,10 @@ const Store = {
     try {
       while (this.queue.length) {
         const lote = this.queue.slice(0, 100);
-        await this.api({ action: 'batch', ops: lote });
+        const r = await this.api({ action: 'batch', ops: lote });
         this.queue.splice(0, lote.length);
+        // as abas gravadas mudam de versão: se ninguém mais mexeu nelas, já estamos atualizados
+        for (const [n, v] of Object.entries(r?.versoes || {})) { if (this.versoes[n] && this.versoes[n] === v.antes) this.versoes[n] = v.depois; else delete this.versoes[n]; }
         this.saveCache();
       }
       setSync('ok');
@@ -209,22 +231,21 @@ const Store = {
     await this.flush();
   },
   _loading: null,
-  load() {
+  load(forcar) {
     if (this._loading) return this._loading;
-    this._loading = this._load().finally(() => { this._loading = null; });
+    this._loading = this._load(forcar).finally(() => { this._loading = null; });
     return this._loading;
   },
-  async _load() {
+  async _load(forcar) {
     if (!this.online) { setSync('local'); return; }
     const ok = await this.flush();
     if (!ok) return;
     setSync('sync');
     try {
-      const d = await this.api({ action: 'getAll' });
+      const temDados = Object.values(this.data).some(l => l.length);
+      const d = await this.api({ action: 'getAll', v: 21, versoes: temDados ? this.versoes : {}, forcar: !!forcar });
       if (this.queue.length) return;   // alterações feitas durante a leitura: não sobrescreve
-      for (const k of Object.keys(COLS)) this.data[k] = (d[k] || []).map(r => this.normalize(k, r));
-      this.ultimaLeitura = Date.now();
-      this.saveCache();
+      this.aplicarRemoto(d);
       setSync('ok');
     } catch (e) {
       setSync('erro', e.message);
@@ -3397,7 +3418,10 @@ function cardSaldos() {
 
 async function backupAutomatico() {
   backupLocalDiario();
-  if (Store.online) { try { await Store.api({ action: 'backupAuto' }); } catch (e) { /* script antigo ou sem internet: tenta de novo no próximo login */ } }
+  if (!Store.online) return;
+  let ult = ''; try { ult = localStorage.getItem('cheel_erp_bksrv') || ''; } catch (e) {}
+  if (ult === hoje()) return;   // já conferido hoje (o backup principal roda sozinho às 3h)
+  try { await Store.api({ action: 'backupAuto' }); try { localStorage.setItem('cheel_erp_bksrv', hoje()); } catch (e) {} } catch (e) { /* tenta de novo no próximo login */ }
 }
 
 function formPlataforma(pl) {
@@ -3605,7 +3629,7 @@ function viewConfigAvancado(el) {
     try { await Auth.trocarSenha(fd.atual, fd.nova); e.target.reset(); toast('Senha alterada', 'ok'); }
     catch (err) { toast(err.message, 'err'); }
   };
-  $('#cfgRecarregar') && ($('#cfgRecarregar').onclick = async () => { await Store.load(); render(); toast('Dados recarregados', 'ok'); });
+  $('#cfgRecarregar') && ($('#cfgRecarregar').onclick = async () => { await Store.load(true); render(); toast('Dados recarregados', 'ok'); });
   $('#cfgEnviar') && ($('#cfgEnviar').onclick = () => confirmar('Enviar todos os registros deste navegador para a planilha? Registros com o mesmo ID serão sobrescritos.', async () => { await enviarTudo(); toast('Dados enviados', 'ok'); render(); }, 'Enviar'));
 
   $('#bkExport').onclick = () => baixar(`cheeloutshop-backup-${hoje()}.json`, JSON.stringify(Store.data, null, 2), 'application/json');
@@ -3738,8 +3762,11 @@ const Auth = {
   async login(email, senha, lembrar) {
     email = normEmail(email);
     if (Store.online) {
-      const r = await Store.api({ action: 'login', email, senha, lembrar });
+      const temDados = Object.values(Store.data).some(l => l.length);
+      const r = await Store.api({ action: 'login', email, senha, lembrar, comDados: true, v: 21, versoes: temDados ? Store.versoes : {} });
+      const dados = r.dados; delete r.dados;
       this.salvar(r, lembrar);
+      if (dados && !Store.queue.length) { try { Store.aplicarRemoto(dados); } catch (e) {} }   // já entra com os dados (sem esperar outra leitura)
     } else {
       this.checarEmail(email);
       const u = this.locais()[email];
@@ -3793,7 +3820,7 @@ const Auth = {
     if (Store.online) {
       Store.api({ action: 'logout' }).catch(() => {});
       // não deixa cópia dos dados no computador depois de sair (exceto pendências)
-      if (!Store.queue.length) { for (const k of Object.keys(COLS)) Store.data[k] = []; Store.saveCache(); }
+      if (!Store.queue.length) { for (const k of Object.keys(COLS)) Store.data[k] = []; Store.versoes = {}; Store.saveCache(); }
     }
     this.limpar();
     this.mostrarLogin('login');
@@ -4118,6 +4145,7 @@ function trocarConexao(url) {
   if (Store.online && Auth.sess) Store.api({ action: 'logout' }).catch(() => {});
   Store.cfg.url = url;
   Store.queue = [];
+  Store.versoes = {};
   Store.saveCfg();
   Store.saveCache();
   Auth.limpar();
