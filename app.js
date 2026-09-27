@@ -9,7 +9,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 }
 
 const COLS = {
-  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos', 'consigId', 'consigImposto', 'consigComissao', 'precoSugerido'],
+  produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos', 'consigId', 'consigImposto', 'consigComissao', 'precoSugerido', 'semCusto'],
   contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick', 'consignante', 'consigImposto', 'consigComissao'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
   compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
@@ -24,7 +24,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '25';
+const APP_VERSAO = '26';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -343,7 +343,7 @@ function efeitosVenda(v) {
       const repasse = jamble || v.formaPgto === 'Repasse da plataforma';
       const liquido = repasse ? r2(num(v.total) - num(v.comissao)) : num(v.total);
       const parc = gerarParcelas(liquido, jamble ? 1 : v.parcelas, jamble ? addDias(v.data || hoje(), JAMBLE_DIAS) : (v.vencimento || v.data));
-      const aVista = !repasse && A_VISTA.includes(v.formaPgto) && parc.length === 1;
+      const aVista = !repasse && (A_VISTA.includes(v.formaPgto) || v.formaPgto === CARTEIRA) && parc.length === 1;
       for (const p of parc) {
         ops.push(up('receber', {
           id: uid(), descricao: `Venda nº ${v.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (repasse ? ` · repasse ${v.canal || 'plataforma'} (líquido)` : ''),
@@ -357,9 +357,34 @@ function efeitosVenda(v) {
     recs.filter(r => interna || r.status !== 'Pago').forEach(r => ops.push(del('receber', r.id)));
   }
   ops.push(...efeitosConsignado(v));
+  ops.push(...efeitosCarteira(v));
+  return ops;
+}
+/* ---------------- Saldo em carteira (consignantes) ----------------
+   O que a loja deve repassar ao dono de produtos consignados (repasses em aberto) é o "saldo em carteira" dele.
+   Ele pode receber em dinheiro (pagar os repasses) ou usar o saldo para comprar produtos:
+   a venda é paga com a carteira → os repasses são dados como pagos (compensação, sem dinheiro entrar ou sair). */
+const repassesAbertos = cid => Store.data.pagar.filter(r => r.origem === 'consig' && r.contatoId === cid && r.status !== 'Pago').sort((a, b) => ((a.vencimento || '') + (a.criadoEm || '')).localeCompare((b.vencimento || '') + (b.criadoEm || '')));
+const saldoCarteira = cid => cid ? r2(repassesAbertos(cid).reduce((t, r) => t + num(r.valor), 0)) : 0;
+function efeitosCarteira(v) {
+  const ops = [], marca = 'carteira:' + v.id;
+  const usados = Store.data.pagar.filter(r => r.origem === 'consig' && String(r.obs || '').includes(marca));
+  const limpa = r => ({ ...r, status: 'Aberto', pagoEm: '', valorPago: '', obs: String(r.obs || '').split(' · ').filter(t => t !== marca).join(' · ') });
+  const usar = v.status === 'Atendido' && v.formaPgto === CARTEIRA && v.clienteId;
+  if (!usar) { usados.forEach(r => ops.push(up('pagar', limpa(r)))); return ops; }
+  // disponível = repasses em aberto do cliente + os que esta venda já tinha usado
+  const lista = [...usados.map(limpa), ...repassesAbertos(v.clienteId)].sort((a, b) => ((a.vencimento || '') + (a.criadoEm || '')).localeCompare((b.vencimento || '') + (b.criadoEm || '')));
+  let resto = r2(num(v.total));
+  for (const r of lista) {
+    const val = num(r.valor);
+    if (resto <= 0.004) { if (usados.some(u => u.id === r.id)) ops.push(up('pagar', r)); continue; }
+    if (val <= resto + 0.004) { ops.push(up('pagar', { ...r, status: 'Pago', pagoEm: v.data, valorPago: val, obs: [r.obs, marca].filter(Boolean).join(' · ') })); resto = r2(resto - val); }
+    else { ops.push(up('pagar', { ...r, valor: resto, status: 'Pago', pagoEm: v.data, valorPago: resto, obs: [r.obs, marca].filter(Boolean).join(' · ') })); ops.push(up('pagar', { ...r, id: uid(), valor: r2(val - resto), descricao: String(r.descricao).replace(/ · saldo restante$/, '') + ' · saldo restante', criadoEm: agora() })); resto = 0; }
+  }
   return ops;
 }
 const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+const semCusto = p => !!p && p.semCusto === 'sim';   // ex.: Carta Avulsa — sem custo de aquisição, fica fora do cálculo de margem
 /* Custo que fica gravado na saída: custo médio do produto; se for consignado, o repasse ao dono por unidade */
 function custoSaidaItem(v, it) {
   const p = produto(it.produtoId);
@@ -461,7 +486,7 @@ function custoMedio(pid, movs) {
 function opsRecalcularCustos() {
   const ops = [], vendasAjust = {};
   for (const p of Store.data.produtos) {
-    if (p.consigId) continue;
+    if (p.consigId || semCusto(p)) continue;
     const lista = Store.data.movimentos.filter(m => m.produtoId === p.id).sort((a, b) => ((a.data || '') + (a.criadoEm || '')).localeCompare((b.data || '') + (b.criadoEm || '')));
     if (!lista.length) continue;
     let qtd = 0, med = 0, teve = false;
@@ -495,7 +520,7 @@ function opsRecalcularCustos() {
 function opsCustoMedio(pids, movs) {
   const ops = [];
   for (const pid of new Set(pids)) {
-    const p = produto(pid); if (!p || p.consigId) continue;
+    const p = produto(pid); if (!p || p.consigId || semCusto(p)) continue;
     const cm = custoMedio(pid, movs);
     if (cm != null && Math.abs(num(p.custo) - cm) > 1e-4) ops.push(up('produtos', { ...p, custo: cm }));
   }
@@ -862,8 +887,8 @@ function viewProdutos(el) {
           <td class="muted">${esc(p.sku)}</td>
           <td class="wrap strong"><button type="button" class="link-prod" data-ver="${p.id}" title="Ver informações do produto">${esc(p.nome)}</button> ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
           <td>${esc(p.categoria)}</td>
-          <td class="r"><button type="button" class="link-custo" data-custo="${p.id}" title="Ver como o custo médio foi calculado">${p.consigId ? '<span class="muted">consig.</span>' : brl(p.custo)}</button></td><td class="r strong">${num(p.preco) ? brl(p.preco) : '<span class="muted">—</span>'}${num(p.precoSugerido) > num(p.preco) ? `<br><span class="badge amber" title="Custo de reposição subiu">sugerido ${brl(p.precoSugerido)}</span>` : ''}</td>
-          <td class="r ${mg < 0 ? 'neg' : ''}">${num(p.preco) ? mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%' : '<span class="muted">—</span>'}</td>
+          <td class="r"><button type="button" class="link-custo" data-custo="${p.id}" title="Ver como o custo médio foi calculado">${p.consigId ? '<span class="muted">consig.</span>' : semCusto(p) ? '<span class="muted">sem custo</span>' : brl(p.custo)}</button></td><td class="r strong">${num(p.preco) ? brl(p.preco) : '<span class="muted">—</span>'}${num(p.precoSugerido) > num(p.preco) ? `<br><span class="badge amber" title="Custo de reposição subiu">sugerido ${brl(p.precoSugerido)}</span>` : ''}</td>
+          <td class="r ${mg < 0 ? 'neg' : ''}">${semCusto(p) ? '<span class="muted" title="Sem custo de aquisição: fora do cálculo de margem">fora</span>' : num(p.preco) ? mg.toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%' : '<span class="muted">—</span>'}</td>
           <td class="r"><span class="badge ${s <= 0 ? 'red' : (num(p.estoqueMin) && s <= num(p.estoqueMin) ? 'amber' : 'green')}">${qtdFmt(s)} ${esc(p.unidade || 'un')}</span></td>
           <td class="act"><span class="inner"><button class="icon-btn" data-hist="${p.id}" title="Histórico de compras e vendas">${ICON.hist}</button><button class="icon-btn" data-edit="${p.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${p.id}" title="Excluir">${ICON.del}</button></span></td>
         </tr>`;
@@ -908,6 +933,7 @@ function formProduto(p) {
         ${field('EAN / código de barras', inp('ean', p.ean))}
         ${field('NCM', inp('ncm', p.ncm))}
         ${field('Situação', `<select name="ativo">${opt([['sim', 'Ativo'], ['nao', 'Inativo']], p.ativo)}</select>`)}
+        <label class="f span3">Custo<span class="check-line"><input type="checkbox" name="semCusto" id="pSemCusto" ${semCusto(p) ? 'checked' : ''}> Sem custo de aquisição (ex.: Carta Avulsa) — não entra no cálculo de margem</span></label>
       </div></div>
       <div class="note warn" id="pNomeDup" hidden></div>
       ${!novo && num(p.precoSugerido) > num(p.preco) ? `<div class="note warn">💡 O custo de reposição subiu: preço sugerido <b>${brl(p.precoSugerido)}</b> (hoje ${brl(p.preco)}) para manter o mesmo markup. <button type="button" class="link" id="pUsaSug">usar o sugerido</button></div>` : ''}
@@ -933,6 +959,8 @@ function formProduto(p) {
     onOpen: body => {
       const upd = () => { const c = num($('#pCusto').value), v = num($('#pPreco').value); $('#pMargem', body).textContent = v ? `Margem: ${((v - c) / v * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% · Lucro por unidade: ${brl(v - c)} · Markup: ${c ? (v / c).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '–'}x` : 'Informe custo e preço para ver a margem.'; };
       ligarMarkup($('#pCusto'), $('#pMarkup'), $('#pPreco'));
+      const sc = () => { const on = $('#pSemCusto').checked; $('#pCusto').disabled = on; $('#pMarkup').disabled = on; if (on) $('#pCusto').value = ''; };
+      $('#pSemCusto').addEventListener('change', sc); sc();
       ['#pCusto', '#pPreco', '#pMarkup'].forEach(s => $(s).addEventListener('input', upd)); upd();
       fotoCampo = campoFoto($('#pFoto', body), p.foto || '', () => $('[name=nome]', body).value);
       const us = $('#pUsaSug', body); if (us) us.onclick = () => { $('#pPreco').value = dec(p.precoSugerido); $('#pPreco').dispatchEvent(new Event('input', { bubbles: true })); };
@@ -973,6 +1001,8 @@ function formProduto(p) {
       const rec = { ...p, id: p.id || uid(), nome: fd.nome.trim(), sku, categoria: fd.categoria.trim(), unidade: fd.unidade, custo: String(fd.custo || '').trim() === dec(p.custo) ? num(p.custo) : r2(fd.custo), preco: r2(fd.preco), estoqueMin: num(fd.estoqueMin), ean: fd.ean.trim(), ncm: fd.ncm.trim(), ativo: fd.ativo, criadoEm: p.criadoEm || agora() };
       rec.foto = fotoCampo ? fotoCampo.valor() : (p.foto || '');
       if (!$('#pNovoCons').hidden && $('#pNovoCons [data-cs=nome]').value.trim()) { toast('Termine o cadastro do consignante (Salvar consignante) ou clique em Cancelar', 'err'); return false; }
+      rec.semCusto = fd.semCusto ? 'sim' : '';
+      if (rec.semCusto) { rec.custo = 0; rec.precoSugerido = ''; }
       rec.consigId = fd.consigId && fd.consigId !== '__novo__' ? fd.consigId : '';
       rec.consigImposto = rec.consigId && String(fd.consigImposto || '').trim() !== '' ? num(fd.consigImposto) : '';
       rec.consigComissao = rec.consigId && String(fd.consigComissao || '').trim() !== '' ? num(fd.consigComissao) : '';
@@ -1487,10 +1517,12 @@ function viewPedidos(el, tipo) {
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const p = find(b.dataset.del);
     const fin = Store.data[V ? 'receber' : 'pagar'].filter(r => r.origemId === p.id);
-    if (fin.some(r => r.status === 'Pago')) return toast('Este pedido tem parcelas já baixadas. Estorne as baixas no financeiro antes de excluir.', 'err');
+    const autoPago = r => V && r.pagoEm === p.data && (A_VISTA.includes(p.formaPgto) || p.formaPgto === CARTEIRA);   // baixa automática da venda à vista
+    if (fin.some(r => r.status === 'Pago' && !autoPago(r))) return toast('Este pedido tem parcelas já baixadas. Estorne as baixas no financeiro antes de excluir.', 'err');
     confirmar(`Excluir ${V ? 'a venda' : 'o pedido de compra'} nº ${p.numero}? As movimentações de estoque e contas geradas por ele também serão removidas.`, () => {
       const ops = [del(tipo, p.id), ...Store.data.movimentos.filter(m => m.origemId === p.id).map(m => del('movimentos', m.id)), ...fin.map(r => del(V ? 'receber' : 'pagar', r.id))];
       if (V) Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === p.id && r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id)));
+      if (V) ops.push(...efeitosCarteira({ ...p, status: 'Cancelado' }));
       return Store.commit(ops).then(() => toast('Excluído', 'ok'));
     }, 'Excluir');
   });
@@ -1846,10 +1878,10 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
   const txt = $('.ac-txt', wrap), hid = $('input[type=hidden]', wrap), list = $('.ac-list', wrap);
   let itens = [], ativo = -1;
   const rotulo = tipo === 'Cliente' ? 'cliente' : 'fornecedor';
-  const lista = () => Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos');
+  const lista = () => Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos' || (tipo === 'Cliente' && c.consignante === 'sim'));
   const fechar = () => { list.hidden = true; ativo = -1; };
   const marcar = () => $$('.ac-item', list).forEach((el, i) => el.classList.toggle('on', i === ativo));
-  const escolher = c => { hid.value = c.id; txt.value = c.nome; wrap.classList.add('ok'); fechar(); };
+  const escolher = c => { hid.value = c.id; txt.value = c.nome; wrap.classList.add('ok'); fechar(); hid.dispatchEvent(new Event('change', { bubbles: true })); };
   const abrir = () => {
     const q = txt.value.trim(), d = soDig(q);
     if (q.length < 3) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 3 letras do nome (ou números do CNPJ/CPF)…</div>'; list.hidden = false; return; }
@@ -1858,7 +1890,7 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
       .sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 8);
     itens = [...r.map(c => ({ c })), { novo: true }];
     list.innerHTML = (r.length ? '' : `<div class="ac-hint">Nenhum ${rotulo} encontrado.</div>`)
-      + r.map((c, i) => `<div class="ac-item" data-k="${i}"><b>${esc(c.nome)}</b><small>${esc([c.nick && '@' + c.nick, c.fantasia, c.documento, c.cidade && c.cidade + (c.uf ? '/' + c.uf : '')].filter(Boolean).join(' · '))}</small></div>`).join('')
+      + r.map((c, i) => { const cw = tipo === 'Cliente' ? saldoCarteira(c.id) : 0; return `<div class="ac-item" data-k="${i}"><b>${esc(c.nome)}</b><small>${esc([c.nick && '@' + c.nick, c.fantasia, c.documento, c.cidade && c.cidade + (c.uf ? '/' + c.uf : '')].filter(Boolean).join(' · '))}${cw ? ` · <span class="pos">carteira ${brl(cw)}</span>` : ''}</small></div>`; }).join('')
       + `<div class="ac-item ac-novo" data-k="${r.length}">➕ Cadastrar novo ${rotulo}${q ? ` “${esc(q)}”` : ''}</div>`;
     ativo = 0; marcar(); list.hidden = false;
   };
@@ -2453,7 +2485,7 @@ function viewContatos(el, tipo) {
   const k = F ? 'Forn' : 'Cli';
   actions(`<button class="btn accent" id="novoCont">${ICON.plus}${F ? 'Novo fornecedor' : 'Novo cliente'}</button>`);
   const q = UI['q' + k] || '';
-  const lista = Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos')
+  const lista = Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos' || (!F && c.consignante === 'sim'))
     .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade, c.nick && '@' + c.nick)).sort((a, b) => a.nome.localeCompare(b.nome));
   // resumo de movimento por contato
   const mov = {};
@@ -2466,7 +2498,7 @@ function viewContatos(el, tipo) {
     <div class="table-wrap"><table>
       <thead><tr><th>Nome</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th class="r">${F ? 'Compras' : 'Vendas'}</th><th class="r">Total</th><th>Última</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(c => { const m = mov[c.id] || { n: 0, t: 0, ult: '' }; return `<tr>
-        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.nick ? `<br><span class="nick">@${esc(c.nick)}</span>` : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
+        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.nick ? `<br><span class="nick">@${esc(c.nick)}</span>` : ''}${saldoCarteira(c.id) ? `<br><span class="badge green" title="Repasses de consignados em aberto">carteira ${brl(saldoCarteira(c.id))}</span>` : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
         <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
@@ -2669,7 +2701,8 @@ function garantirPlataformas() {
 /* =========================================================
    FRENTE DE CAIXA (nova venda)
    ========================================================= */
-const FORMAS_VENDA = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência', 'Repasse da plataforma'];
+const CARTEIRA = 'Saldo em carteira';
+const FORMAS_VENDA = ['Pix', 'Dinheiro', 'Cartão de crédito', 'Cartão de débito', 'Boleto', 'Transferência', 'Repasse da plataforma', CARTEIRA];
 
 function produtoPicker(wrap, onEscolher, onNovo) {
   const txt = $('.ac-txt', wrap), list = $('.ac-list', wrap);
@@ -2795,6 +2828,7 @@ function abrirPDV(v) {
           ${field('Parcelas', inp('parcelas', v.parcelas || 1, 'type="number" min="1" max="24" id="pdvParc"'))}
           <div></div>
         </div>
+        <div class="note" id="pdvCarteira" hidden style="margin:0 0 10px"></div>
         <div class="pdv-total"><span id="pdvResumo"></span><div>Total<b id="pdvTotal">R$ 0,00</b></div></div>
       </div>
       <input type="hidden" name="obs" value="${esc(v.obs || '')}">`,
@@ -2824,6 +2858,13 @@ function abrirPDV(v) {
         const pl = plataformaPorNome($('#pdvPlat', body).value), pct = interno() ? 0 : num(pl?.comissao);
         $('#pdvTotal', body).textContent = brl(t);
         $('#pdvResumo', body).innerHTML = interno() ? `${qtdFmt(n)} item(ns) · <b>valor a custo</b> — não entra nas vendas` : `${qtdFmt(n)} item(ns)${pct ? ` · comissão ${esc(pl.nome)} ${fmtPct(pct)}%: <b>${brl(t * pct / 100)}</b>` : ''}`;
+        const cw = $('#pdvCarteira', body), eCart = $('#pdvForma', body).value === CARTEIRA && !interno();
+        cw.hidden = !eCart;
+        if (eCart) {
+          const cid = $('#acCli input[type=hidden]', body).value, disp = r2(saldoCarteira(cid) + (v.formaPgto === CARTEIRA && v.id ? num(v.total) : 0));
+          cw.className = 'note ' + (!cid || disp + 0.004 < t ? 'warn' : '');
+          cw.innerHTML = !cid ? 'Escolha o cliente (dono de produtos consignados) para usar o saldo em carteira.' : `Saldo em carteira de <b>${esc(nomeContato(cid))}</b>: <b>${brl(disp)}</b>${disp + 0.004 < t ? ` — <span class="neg">falta ${brl(t - disp)}</span>` : ` · depois da compra: ${brl(disp - t)}`}`;
+        }
         const cred = $('#pdvForma', body).value === 'Cartão de crédito';
         $('#pdvParc', body).disabled = !cred; if (!cred) $('#pdvParc', body).value = 1;
       };
@@ -2855,6 +2896,7 @@ function abrirPDV(v) {
       cart.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.closest('.cart-qtd')) { e.preventDefault(); e.target.blur(); } });
       ['#pdvDesc'].forEach(s => $(s, body).oninput = pintarCarrinho);
       $('#pdvForma', body).onchange = pintarCarrinho;
+      $('#acCli', body).addEventListener('change', pintarCarrinho);
       $('#pdvPlat', body).onchange = () => { modoInterno(true); pintarCarrinho(); };
       modoInterno();
 
@@ -2926,6 +2968,11 @@ function abrirPDV(v) {
         if (sor && !String(fd.referencia || '').trim()) { toast('Informe a identificação do sorteio', 'err'); $('#pdvRef', body).focus(); return false; }
         const cons = carrinho.find(i => produto(i.produtoId)?.consigId);
         if (cons) { toast(`“${nomeProduto(cons.produtoId)}” é consignado (de terceiro) e não pode sair como ${sor ? 'sorteio' : 'retirada'}`, 'err'); return false; }
+      }
+      if (!interna && fd.formaPgto === CARTEIRA) {
+        const disp = r2(saldoCarteira(fd.contatoId) + (v.formaPgto === CARTEIRA && v.id ? num(v.total) : 0));
+        if (!fd.contatoId) { toast('Escolha o cliente dono do saldo em carteira', 'err'); return false; }
+        if (disp + 0.004 < total) { toast(`Saldo em carteira insuficiente: ${brl(disp)} (a compra é ${brl(total)})`, 'err'); return false; }
       }
       const pl = plataformaPorNome(fd.canal), pct = interna ? 0 : num(pl?.comissao);
       const forma = interna ? '' : fd.formaPgto;
@@ -3620,7 +3667,7 @@ function dadosDashboard(mes) {
   const custoMov = {};
   for (const m of d.movimentos) if (m.tipo === 'saida' && m.origemId) { const k = m.origemId + '|' + m.produtoId, c = custoMov[k] = custoMov[k] || { q: 0, v: 0 }; c.q += num(m.quantidade); c.v += num(m.quantidade) * num(m.custoUnit); }
   const prods = {}, clientes = {}, canais = {}, consig = { fat: 0, repasse: 0, comissao: 0, n: 0 };
-  let fat = 0, cmv = 0;
+  let fat = 0, cmv = 0, fatSemCusto = 0;
   for (const v of vendas) {
     const bruto = v.itens.reduce((t, i) => t + num(i.qtd) * num(i.valor), 0), fator = bruto ? num(v.total) / bruto : 1;
     let cmvV = 0;
@@ -3629,8 +3676,9 @@ function dadosDashboard(mes) {
       const cu = cm && cm.q ? cm.v / cm.q : num(produto(it.produtoId)?.custo), custo = q * cu;
       cmvV += custo;
       const k = it.produtoId || 'sem:' + (it.descricao || '');
-      const pr = prods[k] = prods[k] || { id: it.produtoId, nome: itemNome(it), q: 0, fat: 0, custo: 0 };
+      const pr = prods[k] = prods[k] || { id: it.produtoId, nome: itemNome(it), q: 0, fat: 0, custo: 0, sc: semCusto(produto(it.produtoId)) };
       pr.q += q; pr.fat += rec; pr.custo += custo;
+      if (pr.sc) fatSemCusto += rec;
       if (produto(it.produtoId)?.consigId) { const c = calcRepasse(v, it); consig.fat += rec; consig.repasse += c ? c.repasse : custo; consig.comissao += c ? c.comissaoV : 0; consig.n += q; }
     }
     fat += num(v.total); cmv += cmvV;
@@ -3665,7 +3713,7 @@ function dadosDashboard(mes) {
   Object.values(de).forEach(x => { sd += x.soma; su += x.un; });
   Object.values(prods).forEach(pr => { const x = pr.id && de[pr.id]; pr.dias = x && x.un ? x.soma / x.un : null; });
   const lucroBruto = fat - cmv, liquido = lucroBruto - comissoes - insumos - sorteios - despesas;
-  return { vendas, fat, cmv, lucroBruto, comissoes, insumos, balRef, sorteios, retiradas, totRet, despesas, despCat, liquido, aposRet: liquido - totRet,
+  return { vendas, fat, cmv, lucroBruto, fatSemCusto, margemBase: fat - fatSemCusto, comissoes, insumos, balRef, sorteios, retiradas, totRet, despesas, despCat, liquido, aposRet: liquido - totRet,
     prods: Object.values(prods), clientes: Object.values(clientes), canais, consig, forn: Object.values(forn), diasMedio: su ? sd / su : null };
 }
 function viewDashboard(el) {
@@ -3688,7 +3736,7 @@ function viewDashboard(el) {
   el.innerHTML = `
     <div class="kpis">
       <div class="card kpi blue"><div class="lbl">Faturamento</div><div class="val">${brl(D.fat)}</div><div class="hint">${D.vendas.length} venda(s) · ticket ${brl(D.vendas.length ? D.fat / D.vendas.length : 0)} ${delta(D.fat, A.fat)}</div></div>
-      <div class="card kpi"><div class="lbl">Lucro bruto</div><div class="val">${brl(D.lucroBruto)}</div><div class="hint">margem média <b>${pc(D.lucroBruto, D.fat)}</b> ${delta(D.lucroBruto, A.lucroBruto)}</div></div>
+      <div class="card kpi"><div class="lbl">Lucro bruto</div><div class="val">${brl(D.lucroBruto)}</div><div class="hint">margem média <b>${pc(D.lucroBruto - D.fatSemCusto, D.margemBase)}</b>${D.fatSemCusto ? ' <small>(sem avulsas)</small>' : ''} ${delta(D.lucroBruto, A.lucroBruto)}</div></div>
       <div class="card kpi green"><div class="lbl">Lucro líquido</div><div class="val ${D.liquido < 0 ? 'neg' : ''}">${brl(D.liquido)}</div><div class="hint">margem líquida <b>${pc(D.liquido, D.fat)}</b> ${delta(D.liquido, A.liquido)}</div></div>
       <div class="card kpi red"><div class="lbl">Resultado após retiradas</div><div class="val ${D.aposRet < 0 ? 'neg' : ''}">${brl(D.aposRet)}</div><div class="hint">retiradas dos sócios ${brl(D.totRet)}</div></div>
     </div>
@@ -3697,7 +3745,7 @@ function viewDashboard(el) {
         <ul class="db-dre">
           ${linha('Faturamento (vendas)', brl(D.fat), 'tot')}
           ${linha('− Custo dos produtos vendidos', brl(D.cmv), 'menos', 'custo médio · consignados = repasse ao dono')}
-          ${linha('= Lucro bruto', brl(D.lucroBruto), 'sub', 'margem ' + pc(D.lucroBruto, D.fat))}
+          ${linha('= Lucro bruto', brl(D.lucroBruto), 'sub', 'margem média ' + pc(D.lucroBruto - D.fatSemCusto, D.margemBase) + (D.fatSemCusto ? ` · sem contar ${brl(D.fatSemCusto)} de itens sem custo (fora da margem)` : ''))}
           ${linha('− Comissões das plataformas', brl(D.comissoes), 'menos', 'inclui taxas de saque')}
           ${linha('− Insumos', brl(D.insumos), 'menos', D.balRef ? `${brl(D.balRef.custoPedido)} por pedido × ${D.vendas.length} (balanço de ${dataBR(D.balRef.data)})` : 'sem balanço de insumos ainda')}
           ${linha('− Sorteios (custo)', brl(D.sorteios), 'menos')}
@@ -3719,7 +3767,7 @@ function viewDashboard(el) {
     </div>
     <div class="card" style="margin-bottom:16px"><h3>Margem por produto</h3>
       ${prodsFat.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table><thead><tr><th>Produto</th><th class="r">Qtd</th><th>Faturamento</th><th class="r">Custo</th><th class="r">Lucro</th><th class="r">Margem</th><th class="r">Dias em estoque</th></tr></thead><tbody>
-        ${prodsFat.map(p => `<tr><td class="wrap strong">${esc(p.nome)}</td><td class="r">${qtdFmt(p.q)}</td><td><div class="db-cel">${barra(p.fat, maxPF)}<span>${brl(p.fat)}</span></div></td><td class="r">${brl(p.custo)}</td><td class="r ${p.fat - p.custo < 0 ? 'neg' : 'pos'}">${brl(p.fat - p.custo)}</td><td class="r strong">${pc(p.fat - p.custo, p.fat)}</td><td class="r">${p.dias == null ? '—' : Math.round(p.dias)}</td></tr>`).join('')}
+        ${prodsFat.map(p => `<tr><td class="wrap strong">${esc(p.nome)}</td><td class="r">${qtdFmt(p.q)}</td><td><div class="db-cel">${barra(p.fat, maxPF)}<span>${brl(p.fat)}</span></div></td><td class="r">${brl(p.custo)}</td><td class="r ${p.fat - p.custo < 0 ? 'neg' : 'pos'}">${brl(p.fat - p.custo)}</td><td class="r strong">${p.sc ? '<span class="muted" title="Sem custo de aquisição">fora</span>' : pc(p.fat - p.custo, p.fat)}</td><td class="r">${p.dias == null ? '—' : Math.round(p.dias)}</td></tr>`).join('')}
       </tbody></table></div>` : vazio('Nenhuma venda neste mês.')}
     </div>
     <div class="two even">
@@ -3936,6 +3984,9 @@ function migracaoV19() {
       add(up('insumoItens', { id: uid(), nome, unidade: it.un || 'UN', custo: r2(it.valor), estoqueMin: '', ativo: 'sim', criadoEm: agora() }));
     }
   }
+  // v26: "Carta Avulsa" sem custo de aquisição fica fora do cálculo de margem (1x)
+  let sc = ''; try { sc = localStorage.getItem('cheel_erp_semcusto') || ''; } catch (e) {}
+  if (!sc) { Store.data.produtos.filter(p => /avuls/.test(norm(p.nome)) && !num(p.custo) && !p.consigId && !semCusto(p)).forEach(p => add(up('produtos', { ...p, semCusto: 'sim' }))); try { localStorage.setItem('cheel_erp_semcusto', '1'); } catch (e) {} }
   // v22.2: acerta custos lançados antes do custo médio (1x por aparelho; o cálculo é o mesmo em qualquer aparelho)
   let rc = ''; try { rc = localStorage.getItem('cheel_erp_recalc') || ''; } catch (e) {}
   if (rc !== '22.2') { opsRecalcularCustos().forEach(add); try { localStorage.setItem('cheel_erp_recalc', '22.2'); } catch (e) {} }
@@ -4007,6 +4058,33 @@ function formPlataforma(pl) {
 
 /* ---------------- Consignação ---------------- */
 const consignantes = () => Store.data.contatos.filter(c => c.consignante === 'sim').sort((a, b) => a.nome.localeCompare(b.nome));
+/* Pagar o saldo em carteira em dinheiro (total ou parte): dá baixa nos repasses mais antigos primeiro */
+function formPagarCarteira(c) {
+  const saldo = saldoCarteira(c.id), abertos = repassesAbertos(c.id);
+  if (!saldo) return toast('Sem saldo em carteira', 'err');
+  Modal.open({
+    title: 'Pagar saldo em carteira — ' + c.nome, small: true, submit: 'Registrar pagamento',
+    body: `<div class="saque-saldo"><span>Saldo em carteira</span><b>${brl(saldo)}</b><small>${abertos.length} repasse(s) de vendas consignadas em aberto</small></div>
+      <div class="grid g2" style="margin-top:12px">
+        ${field('Pago em', inp('data', hoje(), 'type="date" required'))}
+        ${field('Valor pago em dinheiro (R$)', inp('valor', dec(saldo), 'inputmode="decimal" required'))}
+      </div>
+      <p class="muted" style="margin:10px 0 0;font-size:12.5px;font-weight:700">Se preferir, ${esc(c.nome.split(' ')[0])} pode usar o saldo para levar produtos: no frente de caixa, escolha o cliente e a forma de pagamento “${CARTEIRA}”.</p>`,
+    onSubmit: fd => {
+      let resto = r2(fd.valor); const data = fd.data || hoje();
+      if (!(resto > 0)) { toast('Informe o valor', 'err'); return false; }
+      if (resto > saldo + 0.004) { toast(`O valor passa do saldo em carteira (${brl(saldo)})`, 'err'); return false; }
+      const ops = [];
+      for (const r of abertos) {
+        if (resto <= 0.004) break;
+        const v = num(r.valor);
+        if (v <= resto + 0.004) { ops.push(up('pagar', { ...r, status: 'Pago', pagoEm: data, valorPago: v })); resto = r2(resto - v); }
+        else { ops.push(up('pagar', { ...r, valor: resto, status: 'Pago', pagoEm: data, valorPago: resto })); ops.push(up('pagar', { ...r, id: uid(), valor: r2(v - resto), descricao: String(r.descricao).replace(/ · saldo restante$/, '') + ' · saldo restante', criadoEm: agora() })); resto = 0; }
+      }
+      Store.commit(ops); toast(`Pagamento de ${brl(fd.valor)} registrado · saldo em carteira ${brl(saldo - r2(fd.valor))}`, 'ok');
+    },
+  });
+}
 function formConsignante(c) {
   const novo = !c;
   const outros = Store.data.contatos.filter(x => x.consignante !== 'sim').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => [x.id, x.nome + (x.nick ? ' (@' + x.nick + ')' : '')]);
@@ -4042,13 +4120,13 @@ function cardConsignacao() {
       <h3 style="justify-content:space-between">Consignação — taxas por cliente <button class="btn ghost sm" id="novoConsig">${ICON.plus}Novo consignante</button></h3>
       <p class="muted" style="margin:0 0 12px;font-weight:700;font-size:13.5px">Produtos de outras pessoas revendidos sem custo. Quando a venda é faturada, o sistema lança em <b>Contas a pagar</b> o repasse do dono: valor vendido − taxa da Jamble − imposto − comissão.</p>
       <div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table>
-        <thead><tr><th>Dono</th><th class="r">Imposto</th><th class="r">Comissão</th><th class="r">Produtos</th><th class="r">A repassar</th><th class="r">Já repassado</th><th></th></tr></thead>
+        <thead><tr><th>Dono</th><th class="r">Imposto</th><th class="r">Comissão</th><th class="r">Produtos</th><th class="r">Saldo em carteira</th><th class="r">Já repassado</th><th></th></tr></thead>
         <tbody>${cs.length ? cs.map(c => { const r = rep.filter(x => x.contatoId === c.id); return `<tr>
           <td class="strong">${esc(c.nome)}</td><td class="r">${fmtPct(num(c.consigImposto))}%</td><td class="r">${fmtPct(num(c.consigComissao))}%</td>
           <td class="r">${Store.data.produtos.filter(p => p.consigId === c.id).length}</td>
           <td class="r strong neg">${brl(r.filter(x => x.status !== 'Pago').reduce((s, x) => s + num(x.valor), 0))}</td>
           <td class="r">${brl(r.filter(x => x.status === 'Pago').reduce((s, x) => s + num(x.valorPago || x.valor), 0))}</td>
-          <td class="act"><button class="icon-btn" data-consig="${esc(c.id)}" title="Editar taxas">${ICON.edit}</button></td></tr>`; }).join('') : `<tr><td colspan="7"><div class="empty" style="padding:18px">Nenhum consignante. Clique em “Novo consignante” e informe as taxas combinadas.</div></td></tr>`}</tbody>
+          <td class="act"><span class="inner">${saldoCarteira(c.id) ? `<button class="btn ghost sm" data-cart="${esc(c.id)}">Pagar em dinheiro</button>` : ''}<button class="icon-btn" data-consig="${esc(c.id)}" title="Editar taxas">${ICON.edit}</button></span></td></tr>`; }).join('') : `<tr><td colspan="7"><div class="empty" style="padding:18px">Nenhum consignante. Clique em “Novo consignante” e informe as taxas combinadas.</div></td></tr>`}</tbody>
       </table></div>
     </div>`;
 }
@@ -4091,6 +4169,7 @@ function viewConfig(el) {
   $('#novoConsig', el).onclick = () => formConsignante();
   $('#edSaldos', el).onclick = formSaldosAbertura;
   $$('[data-consig]', el).forEach(b => b.onclick = () => formConsignante(contato(b.dataset.consig)));
+  $$('[data-cart]', el).forEach(b => b.onclick = () => formPagarCarteira(contato(b.dataset.cart)));
   $$('[data-plat]', el).forEach(b => b.onclick = () => formPlataforma(plataformas().find(p => p.id === b.dataset.plat)));
   $$('[data-snap]', el).forEach(b => b.onclick = () => { const s = snaps[+b.dataset.snap]; baixar(`cheeloutshop-backup-${s.dia}.json`, JSON.stringify(s.dados, null, 2), 'application/json'); });
   if (!Store.online) return;

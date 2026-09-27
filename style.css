@@ -697,3 +697,5 @@ tr.muted td { color: var(--ink-3); }
 .db-tab table { min-width: 0 !important; width: 100%; }
 .db-tab th, .db-tab td { padding: 9px 8px !important; font-size: 13px; }
 .db-tab td:first-child { white-space: normal; }
+.pdv-interno[hidden], [hidden].note { display: none !important; }
+#pdvCarteira { grid-column: 1 / -1; grid-row: 2; margin: 0 !important; }

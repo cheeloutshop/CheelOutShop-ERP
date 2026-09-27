@@ -146,6 +146,12 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Sistema › Dashboard**: resultado do mês (faturamento, lucro bruto e líquido, margens), margem por produto, mais vendidos, melhores clientes, comissão por canal, consignados, insumos, sorteios, retiradas, fornecedores e tempo médio em estoque.
 - Insumos passam a usar **custo médio ponderado** (mesma regra dos produtos).
 
+## v26 — itens sem custo e saldo em carteira
+
+- Produto com **"Sem custo de aquisição"** (ex.: Carta Avulsa): baixa o estoque normalmente, mas fica fora do cálculo de margem.
+- **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
+- **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
+
 ## Como os dados se ligam
 
 ```
