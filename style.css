@@ -699,3 +699,11 @@ tr.muted td { color: var(--ink-3); }
 .db-tab td:first-child { white-space: normal; }
 .pdv-interno[hidden], [hidden].note { display: none !important; }
 #pdvCarteira { grid-column: 1 / -1; grid-row: 2; margin: 0 !important; }
+
+/* ---------- v27 ---------- */
+tr.prod-row { cursor: pointer; }
+tr.prod-row:hover td { background: #F7FAFF; }
+#fotoPrevia { position: fixed; z-index: 3000; width: 300px; background: #fff; border-radius: 14px; box-shadow: 0 14px 40px rgba(10,42,107,.25); padding: 10px; pointer-events: none; display: flex; flex-direction: column; gap: 8px; }
+#fotoPrevia[hidden] { display: none; }
+#fotoPrevia .fp-grande { width: 100%; height: 280px; object-fit: contain; background: #fff; border-radius: 10px; }
+#fotoPrevia b { font-size: 13px; color: var(--blue-800); text-align: center; }

@@ -10,7 +10,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 
 const COLS = {
   produtos:   ['id', 'sku', 'nome', 'categoria', 'unidade', 'custo', 'preco', 'estoqueMin', 'ean', 'ncm', 'ativo', 'criadoEm', 'foto', 'apelidos', 'consigId', 'consigImposto', 'consigComissao', 'precoSugerido', 'semCusto'],
-  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick', 'consignante', 'consigImposto', 'consigComissao'],
+  contatos:   ['id', 'tipo', 'nome', 'documento', 'telefone', 'email', 'cidade', 'uf', 'obs', 'criadoEm', 'fantasia', 'cep', 'endereco', 'nick', 'consignante', 'consigImposto', 'consigComissao', 'nicksAnteriores'],
   movimentos: ['id', 'data', 'produtoId', 'tipo', 'quantidade', 'custoUnit', 'origem', 'origemId', 'obs', 'criadoEm'],
   compras:    ['id', 'numero', 'data', 'fornecedorId', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'previsao', 'recebidoEm'],
   vendas:     ['id', 'numero', 'data', 'clienteId', 'canal', 'status', 'itens', 'frete', 'desconto', 'total', 'formaPgto', 'parcelas', 'vencimento', 'obs', 'criadoEm', 'comissaoPct', 'comissao', 'referencia'],
@@ -24,7 +24,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '26';
+const APP_VERSAO = '27';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '25/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -384,6 +384,10 @@ function efeitosCarteira(v) {
   return ops;
 }
 const ehCanalJamble = c => /jamble/i.test(String(c || ''));
+/* nicks do cliente na Jamble: o atual + os anteriores (histórico) */
+const nicksAnt = c => String(c?.nicksAnteriores || '').split(' || ').map(x => limpaNick(x)).filter(Boolean);
+const nicksDe = c => [limpaNick(c?.nick), ...nicksAnt(c)].filter(Boolean);
+const temNick = (c, n) => !!n && nicksDe(c).some(x => x.toLowerCase() === limpaNick(n).toLowerCase());
 const semCusto = p => !!p && p.semCusto === 'sim';   // ex.: Carta Avulsa — sem custo de aquisição, fica fora do cálculo de margem
 /* Custo que fica gravado na saída: custo médio do produto; se for consignado, o repasse ao dono por unidade */
 function custoSaidaItem(v, it) {
@@ -641,6 +645,7 @@ const ROUTES = {
 const UI = {}; // estado de filtros por tela
 function rota() { let r = location.hash.replace('#/', '').split('?')[0]; if (r === 'contatos') r = 'clientes'; return ROUTES[r] ? r : 'painel'; }
 function render() {
+  const fp = document.getElementById('fotoPrevia'); if (fp) fp.hidden = true;
   const r = rota();
   const R = ROUTES[r];
   $('#pageTitle').textContent = R.t;
@@ -855,7 +860,7 @@ function abrev(v) { return v >= 1e6 ? (v / 1e6).toLocaleString('pt-BR', { maximu
    ========================================================= */
 function viewProdutos(el) {
   const nPend = fotosPendentes().length;
-  actions(`${nPend ? `<button class="btn ghost" id="fotosPend">📷 Fotos pendentes (${nPend})</button>` : ''}<button class="btn accent" id="novoProd">${ICON.plus}Novo produto</button>`);
+  actions(`${nPend ? `<button class="btn ghost" id="fotosPend">📷 Fotos pendentes (${nPend})</button>` : ''}<button class="btn ghost" id="prodSorteio">${ICON.plus}Produto sorteio</button><button class="btn accent" id="novoProd">${ICON.plus}Novo produto</button>`);
   const q = UI.qProd || '';
   const f = UI.fProd || 'ativos';
   const sal = saldos();
@@ -882,8 +887,8 @@ function viewProdutos(el) {
       <thead><tr><th></th><th>SKU</th><th>Produto</th><th>Categoria</th><th class="r">Custo</th><th class="r">Preço</th><th class="r">Margem</th><th class="r">Estoque</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(p => {
         const s = sal[p.id] || 0, mg = num(p.preco) ? (num(p.preco) - num(p.custo)) / num(p.preco) * 100 : 0;
-        return `<tr>
-          <td class="c-foto">${fotoHTML(p, 'cart-foto')}</td>
+        return `<tr class="prod-row" data-linha="${p.id}" title="Clique para ver o produto">
+          <td class="c-foto" ${p.foto ? `data-prev="${esc(p.id)}"` : ''}>${fotoHTML(p, 'cart-foto')}</td>
           <td class="muted">${esc(p.sku)}</td>
           <td class="wrap strong"><button type="button" class="link-prod" data-ver="${p.id}" title="Ver informações do produto">${esc(p.nome)}</button> ${p.ativo === 'nao' ? '<span class="badge gray">inativo</span>' : ''}${p.consigId ? ` <span class="badge blue" title="Produto consignado">consignado · ${esc(nomeContato(p.consigId))}</span>` : ''}</td>
           <td>${esc(p.categoria)}</td>
@@ -899,6 +904,9 @@ function viewProdutos(el) {
   $$('[data-f]', el).forEach(b => b.onclick = () => { UI.fProd = b.dataset.f; render(); });
   $('#novoProd').onclick = () => formProduto();
   $('#fotosPend') && ($('#fotosPend').onclick = abrirFotosPendentes);
+  $('#prodSorteio').onclick = () => abrirPDV(null, { canal: (plataformas().find(x => ehSorteio(x.nome)) || { nome: 'Sorteio' }).nome, formaPgto: '' });
+  $$('tr[data-linha]', el).forEach(tr => tr.addEventListener('click', e => { if (e.target.closest('button, a, input, select, label')) return; verProduto(produto(tr.dataset.linha)); }));
+  ligarPreviaFoto(el);
   $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
   $$('[data-edit]', el).forEach(b => b.onclick = () => formProduto(produto(b.dataset.edit)));
   $$('[data-hist]', el).forEach(b => b.onclick = () => historicoProduto(produto(b.dataset.hist)));
@@ -1137,6 +1145,17 @@ function explicarCusto(p) {
       ${passos.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line)"><table><thead><tr><th>Data</th><th>Movimentação</th><th class="r">Qtd</th><th class="r">Custo un.</th><th class="r">Estoque depois</th><th class="r">Custo médio depois</th><th>Efeito</th></tr></thead><tbody>
         ${passos.map(x => `<tr><td>${dataBR(x.data)}</td><td class="wrap">${esc(x.rot)}${x.obs ? `<br><small class="muted">${esc(x.obs)}</small>` : ''}</td><td class="r ${x.tipo === 'saida' ? 'neg' : x.tipo === 'custo' ? '' : 'pos'}">${x.tipo === 'custo' ? '—' : (x.tipo === 'saida' ? '−' : '+') + qtdFmt(x.q)}</td><td class="r">${x.tipo === 'saida' ? '<span class="muted">' + brl(x.cu) + '</span>' : brl(x.cu)}</td><td class="r">${qtdFmt(x.qtd)}</td><td class="r strong">${brl(x.med)}</td><td class="wrap"><small>${esc(x.efeito)}${x.conta ? `<br><span class="muted">${x.conta}</span>` : ''}</small></td></tr>`).join('')}</tbody></table></div>`
         : '<div class="empty" style="padding:16px">Sem movimentações: o custo é o informado no cadastro.</div>'}`,
+  });
+}
+/* Prévia grande da foto ao passar o mouse na miniatura */
+function ligarPreviaFoto(el) {
+  let box = $('#fotoPrevia');
+  if (!box) { box = document.createElement('div'); box.id = 'fotoPrevia'; box.hidden = true; document.body.appendChild(box); }
+  const pos = e => { const w = 300, h = 340, x = e.clientX + 18 + w > innerWidth ? e.clientX - w - 18 : e.clientX + 18, y = Math.min(innerHeight - h - 10, Math.max(10, e.clientY - h / 2)); box.style.left = x + 'px'; box.style.top = y + 'px'; };
+  $$('[data-prev]', el).forEach(td => {
+    td.addEventListener('mouseenter', e => { const p = produto(td.dataset.prev); if (!p?.foto) return; box.innerHTML = `${fotoHTML(p, 'fp-grande')}<b>${esc(p.nome)}</b>`; box.hidden = false; pos(e); });
+    td.addEventListener('mousemove', pos);
+    td.addEventListener('mouseleave', () => { box.hidden = true; });
   });
 }
 /* Ficha do produto (somente visualização) */
@@ -1856,7 +1875,7 @@ function camposPessoa(pref, c = {}, opts = {}) {
   const a = k => `data-${pref}="${k}"`;
   return `
     <div class="grid g4">
-      ${opts.nick ? `<label class="f span2">Nick na Jamble<div class="nick-in"><span>@</span><input ${a('nick')} autocomplete="off" value="${esc(c.nick || '')}" placeholder="usuário na Jamble"></div></label><div class="span2"></div>` : ''}
+      ${opts.nick ? `<label class="f span2">Nick na Jamble<div class="nick-in"><span>@</span><input ${a('nick')} autocomplete="off" value="${esc(c.nick || '')}" placeholder="usuário na Jamble"></div></label><div class="span2">${nicksAnt(c).length ? `<small class="muted" style="font-weight:700;display:block;margin-top:24px">Nicks usados antes: ${nicksAnt(c).map(n => '@' + esc(n)).join(', ')}</small>` : ''}</div>` : ''}
       <label class="f span2">CPF ou CNPJ<input ${a('documento')} inputmode="numeric" autocomplete="off" value="${esc(c.documento || '')}" placeholder="Só números — o tipo é identificado sozinho"><span class="doc-status" ${a('docStatus')}></span></label>
       ${field('Nome / razão social *', `<input ${a('nome')} autocomplete="off" value="${esc(c.nome || '')}">`, 'span2')}
       ${field('Nome fantasia', `<input ${a('fantasia')} autocomplete="off" value="${esc(c.fantasia || '')}">`, 'span2')}
@@ -1886,7 +1905,7 @@ function fornecedorPicker(wrap, onNovo, tipo = 'Fornecedor') {
     const q = txt.value.trim(), d = soDig(q);
     if (q.length < 3) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 3 letras do nome (ou números do CNPJ/CPF)…</div>'; list.hidden = false; return; }
     const qn = limpaNick(q).toLowerCase();
-    const r = lista().filter(c => match(q, c.nome, c.fantasia) || (c.nick && qn.length >= 3 && String(c.nick).toLowerCase().includes(qn)) || (d.length >= 3 && soDig(c.documento).includes(d)))
+    const r = lista().filter(c => match(q, c.nome, c.fantasia) || (qn.length >= 3 && nicksDe(c).some(n => n.toLowerCase().includes(qn))) || (d.length >= 3 && soDig(c.documento).includes(d)))
       .sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 8);
     itens = [...r.map(c => ({ c })), { novo: true }];
     list.innerHTML = (r.length ? '' : `<div class="ac-hint">Nenhum ${rotulo} encontrado.</div>`)
@@ -2486,7 +2505,7 @@ function viewContatos(el, tipo) {
   actions(`<button class="btn accent" id="novoCont">${ICON.plus}${F ? 'Novo fornecedor' : 'Novo cliente'}</button>`);
   const q = UI['q' + k] || '';
   const lista = Store.data.contatos.filter(c => c.tipo === tipo || c.tipo === 'Ambos' || (!F && c.consignante === 'sim'))
-    .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade, c.nick && '@' + c.nick)).sort((a, b) => a.nome.localeCompare(b.nome));
+    .filter(c => match(q, c.nome, c.documento, c.email, c.telefone, c.cidade, ...nicksDe(c).map(n => '@' + n))).sort((a, b) => a.nome.localeCompare(b.nome));
   // resumo de movimento por contato
   const mov = {};
   (F ? Store.data.compras : Store.data.vendas).filter(p => p.status !== 'Cancelado' && (F || !ehInterna(p))).forEach(p => {
@@ -2498,7 +2517,7 @@ function viewContatos(el, tipo) {
     <div class="table-wrap"><table>
       <thead><tr><th>Nome</th><th>CPF / CNPJ</th><th>Telefone</th><th>E-mail</th><th>Cidade</th><th class="r">${F ? 'Compras' : 'Vendas'}</th><th class="r">Total</th><th>Última</th><th></th></tr></thead>
       <tbody>${lista.length ? lista.map(c => { const m = mov[c.id] || { n: 0, t: 0, ult: '' }; return `<tr>
-        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.nick ? `<br><span class="nick">@${esc(c.nick)}</span>` : ''}${saldoCarteira(c.id) ? `<br><span class="badge green" title="Repasses de consignados em aberto">carteira ${brl(saldoCarteira(c.id))}</span>` : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
+        <td class="wrap strong">${esc(c.nome)} ${c.tipo === 'Ambos' ? '<span class="badge gray">cliente e fornecedor</span>' : ''}${c.nick ? `<br><span class="nick">@${esc(c.nick)}</span>${nicksAnt(c).length ? ` <small class="muted" title="Nicks usados antes">antes: ${nicksAnt(c).map(n => '@' + esc(n)).join(', ')}</small>` : ''}` : ''}${saldoCarteira(c.id) ? `<br><span class="badge green" title="Repasses de consignados em aberto">carteira ${brl(saldoCarteira(c.id))}</span>` : ''}${c.fantasia ? `<br><span class="muted" style="font-weight:700;font-size:12.5px">${esc(c.fantasia)}</span>` : ''}</td>
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
         <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
@@ -2531,7 +2550,8 @@ function formContato(c, tipo = 'Cliente') {
       const d = lerPessoa(body, 'pc');
       if (!d.nome) { toast('Informe o nome ou a razão social', 'err'); $('[data-pc=nome]', body).focus(); return false; }
       if (c.tipo === 'Fornecedor') delete d.nick;
-      const nickDup = d.nick && Store.data.contatos.find(x => x.id !== c.id && limpaNick(x.nick).toLowerCase() === d.nick.toLowerCase());
+      const nickDup = d.nick && Store.data.contatos.find(x => x.id !== c.id && temNick(x, d.nick));
+      if (d.nick && c.nick && !temNick(c, d.nick)) d.nicksAnteriores = [...nicksAnt(c), limpaNick(c.nick)].join(' || ');   // troca de nick: guarda o antigo
       if (nickDup) { toast(`O nick @${d.nick} já está no cadastro de ${nickDup.nome}`, 'err'); return false; }
       const t = tipoDoc(d.documento);
       if (t === 'cpf-invalido' || t === 'cnpj-invalido') { toast('CPF/CNPJ inválido — confira os números', 'err'); return false; }
@@ -2742,9 +2762,9 @@ function produtoPicker(wrap, onEscolher, onNovo) {
   list.addEventListener('mousedown', e => { const it = e.target.closest('.ac-item'); if (!it) return; e.preventDefault(); pick(+it.dataset.k); });
 }
 
-function abrirPDV(v) {
+function abrirPDV(v, preset) {
   const novo = !v;
-  v = v ? { ...v, itens: v.itens.map(i => ({ ...i })) } : { data: hoje(), canal: (plataformasAtivas()[0] || {}).nome || '', formaPgto: 'Pix', parcelas: 1, desconto: '', itens: [] };
+  v = v ? { ...v, itens: v.itens.map(i => ({ ...i })) } : { data: hoje(), canal: (plataformasAtivas()[0] || {}).nome || '', formaPgto: 'Pix', parcelas: 1, desconto: '', itens: [], ...(preset || {}) };
   const numeroPrevisto = novo ? proxNumero(Store.data.vendas) : v.numero;
   const cli = contato(v.clienteId);
   const plats = plataformasAtivas().map(p => [p.nome, p.nome + (num(p.comissao) ? ` (${fmtPct(num(p.comissao))}%)` : '')]);
@@ -2754,7 +2774,7 @@ function abrirPDV(v) {
   let atual = null;   // produto escolhido no campo de busca
   $('#modal').classList.add('pdv-modal');
   Modal.open({
-    title: novo ? 'Frente de caixa' : `Venda nº ${v.numero}`,
+    title: novo ? (ehSorteio(v.canal) ? '🎁 Produto sorteado' : 'Frente de caixa') : `Venda nº ${v.numero}`,
     submit: novo ? 'Finalizar venda' : 'Salvar venda',
     body: `
       <div class="grid g4 pdv-top">
@@ -3321,13 +3341,23 @@ function abrirImportarEtiquetas() {
       // clientes: procura por @nick, depois CPF, depois nome
       for (const p of sel) {
         const nome = p.cliente.trim(), nick = limpaNick(p.handle), cpfDig = soDig(p.cpf);
-        let c = (nick && Store.data.contatos.find(x => limpaNick(x.nick).toLowerCase() === nick.toLowerCase()))
+        let c = (nick && Store.data.contatos.find(x => temNick(x, nick)))
           || (cpfDig && Store.data.contatos.find(x => soDig(x.documento) === cpfDig))
           || Store.data.contatos.find(x => (x.tipo === 'Cliente' || x.tipo === 'Ambos') && norm(x.nome) === norm(nome));
         if (!c) {
           c = { id: uid(), tipo: 'Cliente', nome, nick, documento: cpfDig ? fmtDoc(cpfDig) : '', telefone: '', email: '', cidade: p.cidade || '', uf: p.uf || '', cep: p.cep || '', endereco: p.endereco || '', fantasia: '', obs: 'Cadastrado pela importação do PDF da Jamble', criadoEm: agora() };
           ops.push(up('contatos', c)); Store.apply([up('contatos', c)]);
-        } else if (nick && !c.nick) { c = { ...c, nick }; ops.push(up('contatos', c)); Store.apply([up('contatos', c)]); }
+        } else {
+          // cliente já cadastrado: completa cidade/estado/endereço e guarda o nick novo (o antigo fica no histórico)
+          const nv = { ...c };
+          if (nick && !temNick(c, nick)) { if (c.nick) nv.nicksAnteriores = [...nicksAnt(c), limpaNick(c.nick)].join(' || '); nv.nick = nick; }
+          if (!c.cidade && p.cidade) nv.cidade = p.cidade;
+          if (!c.uf && p.uf) nv.uf = p.uf;
+          if (!c.cep && p.cep) nv.cep = p.cep;
+          if (!c.endereco && p.endereco) nv.endereco = p.endereco;
+          if (!soDig(c.documento) && cpfDig) nv.documento = fmtDoc(cpfDig);
+          if (JSON.stringify(nv) !== JSON.stringify(c)) { c = nv; ops.push(up('contatos', c)); Store.apply([up('contatos', c)]); }
+        }
         p.clienteId = c.id;
       }
       // nomes confirmados na conferência passam a ser reconhecidos nas próximas importações

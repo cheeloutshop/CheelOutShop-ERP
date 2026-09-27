@@ -152,6 +152,12 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27
+
+- Produtos: botão **+ Produto sorteio**, prévia grande da foto ao passar o mouse e a linha inteira abre a ficha do produto (com botão Editar).
+- Importação Jamble: completa cidade/UF/CEP/endereço do cliente já cadastrado e, se o nick mudou, guarda o novo mantendo os antigos no histórico (busca funciona por qualquer nick).
+- **Atualize o script** (nova versão da implantação): coluna `nicksAnteriores` criada sozinha.
+
 ## Como os dados se ligam
 
 ```
