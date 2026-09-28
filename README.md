@@ -152,6 +152,11 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.1
+- Painel: novo card **Estoque a receber** (pedidos de compra "Em aberto" = mercadoria comprada que ainda não chegou). Clicando, abre a lista com pedido, fornecedor, itens, valor, situação do pagamento e botão **Chegou** (dá entrada no estoque).
+- Posição hoje: novo card **+ Estoque a receber**, somado na Posição da loja.
+- Só front-end (Code.gs não muda).
+
 ## v27
 
 - Produtos: botão **+ Produto sorteio**, prévia grande da foto ao passar o mouse e a linha inteira abre a ficha do produto (com botão Editar).

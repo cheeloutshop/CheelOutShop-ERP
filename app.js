@@ -24,9 +24,9 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27';
+const APP_VERSAO = '27.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
-const APP_DATA_VERSAO = '25/09/2026';
+const APP_DATA_VERSAO = '27/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -467,6 +467,46 @@ function ultimoCusto(produtoId, ignorarOrigemId) {
   const p = produto(produtoId); return p ? num(p.custo) : 0;
 }
 
+/* ---------------- Estoque a receber (v27.1) ----------------
+   Pedidos de compra "Em aberto": mercadoria comprada que ainda não chegou.
+   Valor = total do pedido (itens − desconto + frete), a preço de custo. */
+function estoqueAReceber() {
+  const peds = Store.data.compras.filter(c => c.status === 'Em aberto').sort((a, b) => (a.data || '').localeCompare(b.data || ''));
+  const valor = c => num(c.total) || r2(Math.max(0, totalItens(c.itens || []) - num(c.desconto)) + num(c.frete));
+  const un = c => (c.itens || []).reduce((t, i) => t + num(i.qtd) * fatorItem(i), 0);
+  return { peds, valor, un, total: r2(peds.reduce((t, c) => t + valor(c), 0)), unidades: peds.reduce((t, c) => t + un(c), 0) };
+}
+function verEstoqueAReceber() {
+  const E = estoqueAReceber();
+  const dias = d => d ? Math.max(0, Math.round((new Date(hoje() + 'T12:00:00') - new Date(d.slice(0, 10) + 'T12:00:00')) / 864e5)) : 0;
+  const pgto = c => {
+    if (c.formaPgto === INTEGRACAO) return '<span class="badge green">Integração · já pago</span>';
+    const ps = Store.data.pagar.filter(r => r.origem === 'compra' && r.origemId === c.id);
+    if (!ps.length) return `<span class="badge">${esc(c.formaPgto || '—')}</span>`;
+    const pg = ps.filter(r => r.status === 'Pago').length;
+    return `<span class="badge ${pg === ps.length ? 'green' : pg ? 'amber' : 'red'}">${esc(c.formaPgto || '')} · ${pg}/${ps.length} pago</span>`;
+  };
+  const linhas = E.peds.map(c => `<tr>
+      <td><b>nº ${esc(c.numero)}</b><br><small class="muted">${dataBR(c.data)} · há ${dias(c.data)} dia(s)</small></td>
+      <td>${esc(nomeContato(c.fornecedorId) || '—')}${c.previsao ? `<br><small class="muted">previsão ${dataBR(c.previsao)}</small>` : ''}</td>
+      <td class="wrap"><small>${(c.itens || []).map(i => `${qtdFmt(num(i.qtd) * fatorItem(i))}× ${esc(nomeProduto(i.produtoId))}`).join('<br>')}</small></td>
+      <td class="r"><b>${brl(E.valor(c))}</b><br>${pgto(c)}</td>
+      <td class="act"><button type="button" class="btn primary sm" data-chegou="${c.id}">Chegou</button></td></tr>`).join('');
+  Modal.open({
+    title: 'Estoque a receber',
+    body: E.peds.length ? `<div class="note">Pedidos de compra <b>Em aberto</b> — mercadoria já comprada que ainda não chegou. Total <b>${brl(E.total)}</b> a preço de custo · ${qtdFmt(E.unidades)} unidade(s). Quando chegar, clique em <b>Chegou</b> para dar entrada no estoque.</div>
+      <div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line);margin-top:10px"><table><thead><tr><th>Pedido</th><th>Fornecedor</th><th>Itens</th><th class="r">Valor</th><th></th></tr></thead><tbody>${linhas}</tbody>
+      <tfoot><tr><td colspan="3"><b>Total a receber</b></td><td class="r"><b>${brl(E.total)}</b></td><td></td></tr></tfoot></table></div>`
+      : '<p class="muted" style="margin:0;font-weight:700">Nenhum pedido de compra em aberto — todo o estoque comprado já chegou.</p>',
+    onOpen: body => $$('[data-chegou]', body).forEach(b => b.onclick = () => {
+      const c = Store.data.compras.find(x => x.id === b.dataset.chegou); if (!c) return;
+      const novo = { ...c, status: 'Recebido', recebidoEm: hoje() };
+      confirmar(`Confirmar a chegada do pedido nº ${esc(c.numero)}? Entram <b>${qtdFmt(E.un(c))} unidade(s)</b> no estoque, com data de hoje.`,
+        () => Store.commit([up('compras', novo), ...efeitosCompra(novo)]).then(() => { toast('Mercadoria recebida', 'ok'); render(); }), 'Receber');
+    }),
+  });
+}
+
 /* ---------------- Custo médio ponderado ----------------
    Recalcula o custo médio do produto repassando o histórico de movimentações em ordem:
    - entrada de compra/manual com custo: entra na média ponderada
@@ -726,6 +766,7 @@ function viewPainel(el) {
       <div class="card kpi"><div class="lbl">Vendas no mês</div><div class="val">${brl(totMes)}</div><div class="hint">${vMes.length} venda(s) · ticket médio ${brl(vMes.length ? totMes / vMes.length : 0)}${comissoesMes(mes) ? ` · comissões <span class="neg">${brl(comissoesMes(mes))}</span>` : ''}</div></div>
       <div class="card kpi green kpi-link" data-ir="receber" role="link" tabindex="0" title="Abrir contas a receber"><div class="lbl">A receber (em aberto) <span class="kpi-seta">›</span></div><div class="val">${brl(sum(recAb))}</div><div class="hint">${recVenc.length ? `<span class="neg">${recVenc.length} vencida(s) · ${brl(sum(recVenc))}</span>` : 'Nenhuma vencida'}</div></div>
       <div class="card kpi red kpi-link" data-ir="pagar" role="link" tabindex="0" title="Abrir contas a pagar"><div class="lbl">A pagar (em aberto) <span class="kpi-seta">›</span></div><div class="val">${brl(sum(pagAb))}</div><div class="hint">${pagVenc.length ? `<span class="neg">${pagVenc.length} vencida(s) · ${brl(sum(pagVenc))}</span>` : 'Nenhuma vencida'}</div></div>
+      ${(() => { const E = estoqueAReceber(); return `<div class="card kpi kpi-link amber" id="kpiAReceber" tabindex="0" role="button" title="Ver os pedidos de compra que ainda não chegaram"><div class="lbl">Estoque a receber ›</div><div class="val">${brl(E.total)}</div><div class="hint">${E.peds.length ? `${E.peds.length} pedido(s) · ${qtdFmt(E.unidades)} un a chegar` : 'nenhum pedido em aberto'}</div></div>`; })()}
       <div class="card kpi blue"><div class="lbl">Valor em estoque (custo)</div><div class="val">${brl(valorEst)}</div><div class="hint">${ativos.length} produto(s) · ${baixo.length ? `<span class="neg">${baixo.length} abaixo do mínimo</span>` : 'estoque ok'}</div></div>
     </div>
     <div class="two">
@@ -765,6 +806,7 @@ function viewPainel(el) {
     ${fluxoCaixaHTML(valorEst)}`;
   $('#novaVendaTop').onclick = () => formVenda();
   $('#impEtqTop').onclick = abrirImportarEtiquetas;
+  { const k = $('#kpiAReceber', el); if (k) { k.onclick = verEstoqueAReceber; k.onkeydown = e => { if (e.key === 'Enter') verEstoqueAReceber(); }; } }
   $$('[data-psug]', el).forEach(b => b.onclick = () => { const p = produto(b.dataset.psug); Store.commit([up('produtos', { ...p, preco: num(p.precoSugerido), precoSugerido: '' })]); toast(`Preço de ${p.nome} atualizado para ${brl(p.precoSugerido)}`, 'ok'); });
   $$('[data-pkeep]', el).forEach(b => b.onclick = () => { const p = produto(b.dataset.pkeep); Store.commit([up('produtos', { ...p, precoSugerido: '' })]); toast('Preço mantido', 'ok'); });
   $$('[data-negativo]', el).forEach(a => a.onclick = () => { UI.tabEst = 'saldos'; UI.fEst = 'negativo'; });
@@ -789,7 +831,8 @@ function fluxoCaixaHTML(valorEst) {
   const aRec = r2(d.receber.filter(c => c.status !== 'Pago').reduce((s, c) => s + num(c.valor), 0));
   const aPag = r2(d.pagar.filter(c => c.status !== 'Pago').reduce((s, c) => s + num(c.valor), 0));
   const consig = r2(d.pagar.filter(c => c.status !== 'Pago' && c.origem === 'consig').reduce((s, c) => s + num(c.valor), 0));
-  const pos = r2(caixa + aRec - aPag + valorEst);
+  const estRec = estoqueAReceber().total;
+  const pos = r2(caixa + aRec - aPag + valorEst + estRec);
   const [yy, mm] = mes.split('-');
   const abertura = d.receber.filter(c => c.origem === 'abertura' && c.status === 'Pago');
   const saldoIni = r2(abertura.reduce((s, c) => s + pago(c), 0));
@@ -820,7 +863,8 @@ function fluxoCaixaHTML(valorEst) {
         <div><span>+ A receber</span><b class="pos">${brl(aRec)}</b><small>em aberto (inclui Jamble)</small></div>
         <div><span>− A pagar</span><b class="neg">${brl(aPag)}</b><small>${consig ? `inclui ${brl(consig)} de repasse consignado` : 'em aberto'}</small></div>
         <div><span>+ Estoque</span><b>${brl(valorEst)}</b><small>a preço de custo</small></div>
-        <div class="tot"><span>= Posição da loja</span><b class="${pos < 0 ? 'neg' : ''}">${brl(pos)}</b><small>caixa + a receber − a pagar + estoque</small></div>
+        <div><span>+ Estoque a receber</span><b>${brl(estRec)}</b><small>pedidos que ainda não chegaram</small></div>
+        <div class="tot"><span>= Posição da loja</span><b class="${pos < 0 ? 'neg' : ''}">${brl(pos)}</b><small>caixa + a receber − a pagar + estoque + estoque a receber</small></div>
       </div>
       <details class="fc-det"><summary>Ver os ${lanc.length} lançamento(s) do mês</summary>
         ${lanc.length ? `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line);margin-top:10px"><table>
