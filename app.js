@@ -24,9 +24,9 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27.1';
+const APP_VERSAO = '27.2.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
-const APP_DATA_VERSAO = '27/09/2026';
+const APP_DATA_VERSAO = '28/09/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -571,6 +571,15 @@ function opsCustoMedio(pids, movs) {
   return ops;
 }
 
+/* v27.2: pagamento à vista no pedido — Pix, ou Boleto em 1x sem prazo (vencimento no dia do pedido ou antes).
+   A conta a pagar já nasce PAGA na data do pedido (sai do saldo em conta mesmo com o pedido em aberto);
+   ao receber a mercadoria, só entra no estoque (a conta paga não é refeita).
+   v27.2.1: vale só para pedidos NOVOS (sem contas a pagar ainda); pedidos já cadastrados não mudam. */
+function pagoNoPedido(c) {
+  if (c.formaPgto === 'Pix') return true;
+  return c.formaPgto === 'Boleto' && Math.max(1, Math.floor(num(c.parcelas)) || 1) === 1 && (!c.vencimento || c.vencimento <= c.data);
+}
+
 /* Efeitos de um pedido de compra:
    - contas a pagar: lançadas já na criação do pedido (pré-venda: boleto vence antes da mercadoria chegar)
    - estoque: entra só quando o pedido é RECEBIDO, sempre em unidades (qtd × unidades por embalagem)
@@ -610,14 +619,16 @@ function efeitosCompra(c) {
     pags.filter(r => r.status !== 'Pago').forEach(r => ops.push(del('pagar', r.id)));
   } else if (!temPago) {
     pags.forEach(r => ops.push(del('pagar', r.id)));
-    const nParc = c.formaPgto === 'Pix' ? 1 : c.parcelas;
-    const parc = gerarParcelas(num(c.total), nParc, c.vencimento || c.data);
+    const aVista = pagoNoPedido(c) && !pags.length;   // só pedidos novos: pedidos antigos com conta em aberto seguem como antes
+    const nParc = aVista ? 1 : c.parcelas;
+    const parc = gerarParcelas(num(c.total), nParc, aVista ? c.data : (c.vencimento || c.data));
     const forn = nomeContato(c.fornecedorId);
     for (const p of parc) {
       ops.push(up('pagar', {
         id: uid(), descricao: `Pedido de compra nº ${c.numero}` + (parc.length > 1 ? ` · parcela ${p.n}/${parc.length}` : '') + (forn ? ` · ${forn}` : ''),
         contatoId: c.fornecedorId, categoria: 'Fornecedores', vencimento: p.vencimento, valor: p.valor,
-        status: 'Aberto', pagoEm: '', valorPago: '', origem: 'compra', origemId: c.id, obs: c.formaPgto || '', criadoEm: agora(),
+        status: aVista ? 'Pago' : 'Aberto', pagoEm: aVista ? c.data : '', valorPago: aVista ? p.valor : '',
+        origem: 'compra', origemId: c.id, obs: [c.formaPgto || '', aVista ? 'pago no pedido (à vista)' : ''].filter(Boolean).join(' · '), criadoEm: agora(),
       }));
     }
   }
@@ -2095,7 +2106,7 @@ function formCompra(p) {
       </div>
       <div class="note warn" id="pgInteg" hidden><b>Integração</b> (lançamento de implantação — disponível até ${dataBR(INTEGRACAO_ATE)}): o pedido só dá entrada no estoque e atualiza o custo dos produtos ao marcar <b>Recebido</b>. <b>Não gera contas a pagar</b> nem mexe no caixa. Parcelas que ainda faltam pagar, lance em Contas a pagar › Nova conta › “Conta já parcelada”.</div>
       ${field('Observações', `<textarea name="obs">${esc(p.obs)}</textarea>`, '')}
-      <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado <b>já com o frete rateado</b> (proporcional ao valor de cada item). O frete não soma no total do pedido.</div>`,
+      <div class="note">As <b>contas a pagar</b> são lançadas assim que o pedido é salvo (ideal para pré-venda: o boleto pode vencer antes da mercadoria chegar). <b>Pix</b> ou <b>Boleto à vista</b> (1x, vencimento na data do pedido) já ficam <b>pagos</b> e saem do saldo em conta na hora, mesmo com o pedido em aberto — ao receber, só entra no estoque. Ao marcar como <b>Recebido</b>, os produtos entram no estoque <b>em unidades</b> e o custo unitário do produto é atualizado <b>já com o frete rateado</b> (proporcional ao valor de cada item). O frete não soma no total do pedido.</div>`,
     onOpen: body => {
       const tb = $('#itensBody', body);
       const recalc = () => {
@@ -2143,7 +2154,9 @@ function formCompra(p) {
         $('#pgVenc').disabled = integ;
         $('#pgInteg').hidden = !integ;
         const n = Math.max(1, Math.floor(num($('#pgParc').value)) || 1);
-        $('#pgResumo').textContent = integ ? 'Integração: não gera contas a pagar' : total > 0 ? (n > 1 ? `${n}x de ${brl(total / n)}` : `1x de ${brl(total)}`) + ' em contas a pagar' : '';
+        const dPed = $('#modalBody [name=data]')?.value || hoje();
+        const aVista = !integ && !(p.id && Store.data.pagar.some(r => r.origem === 'compra' && r.origemId === p.id)) && pagoNoPedido({ formaPgto: $('#pgForma').value, parcelas: n, vencimento: $('#pgVenc').value, data: dPed });
+        $('#pgResumo').textContent = integ ? 'Integração: não gera contas a pagar' : total > 0 ? (aVista ? `À vista: ${brl(total)} já sai do saldo em conta` : (n > 1 ? `${n}x de ${brl(total / n)}` : `1x de ${brl(total)}`) + ' em contas a pagar') : '';
       };
       tb.addEventListener('input', recalc);
       tb.addEventListener('change', e => {
@@ -2167,6 +2180,7 @@ function formCompra(p) {
       $$('tr', tb).forEach(ligar);
       $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowCompra({ qtd: 1, un: 'UN' })); const tr = $('tr:last-child', tb); ligar(tr); recalc(); $('.ac-txt', tr).focus(); };
       ['#pedFrete', '#pedDesc', '#pgParc'].forEach(s => $(s, body).oninput = recalc);
+      $('#pgVenc', body).onchange = recalc; const dIn = $('[name=data]', body); if (dIn) dIn.addEventListener('change', recalc);
       $('#pgForma', body).onchange = () => { if ($('#pgForma').value === INTEGRACAO && $('#pedStatus').value === 'Em aberto') $('#pedStatus').value = 'Recebido'; recalc(); };
 
       // ---- fornecedor: busca + cadastro rápido

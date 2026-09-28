@@ -152,6 +152,11 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.2 / v27.2.1
+- Pedido de compra pago **à vista** (Pix, ou Boleto em 1x com vencimento na data do pedido): a conta a pagar já nasce **paga** na data do pedido e sai do Saldo em conta, mesmo com o pedido em aberto. Ao receber, só entra no estoque (não debita de novo).
+- **v27.2.1:** vale só para pedidos **novos**. Pedidos já cadastrados (com conta a pagar em aberto) não mudam — nem ao editar nem ao receber; sem migração automática.
+- Só front-end (Code.gs não muda).
+
 ## v27.1
 - Painel: novo card **Estoque a receber** (pedidos de compra "Em aberto" = mercadoria comprada que ainda não chegou). Clicando, abre a lista com pedido, fornecedor, itens, valor, situação do pagamento e botão **Chegou** (dá entrada no estoque).
 - Posição hoje: novo card **+ Estoque a receber**, somado na Posição da loja.
