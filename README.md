@@ -152,6 +152,12 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.3
+- Compra de insumos: lista de sugestões ao digitar a descrição (insumos cadastrados + já usados), preenche unidade e último custo.
+- Clientes consignantes: botão **Saldo** e aba **Saldo** no cadastro — vendas líquidas por data, com o cálculo (bruto − taxa − imposto − comissão) ao passar o mouse e o detalhe de cada venda.
+- Contas a pagar: repasse de consignado agrupado em **1 conta por dono + dia** (lote). Venda nova no mesmo dia atualiza o lote; se o lote já foi pago, abre um complemento só com a diferença. Contas antigas (por produto) são juntadas automaticamente.
+- Só front-end (Code.gs não muda).
+
 ## v27.2 / v27.2.1
 - Pedido de compra pago **à vista** (Pix, ou Boleto em 1x com vencimento na data do pedido): a conta a pagar já nasce **paga** na data do pedido e sai do Saldo em conta, mesmo com o pedido em aberto. Ao receber, só entra no estoque (não debita de novo).
 - **v27.2.1:** vale só para pedidos **novos**. Pedidos já cadastrados (com conta a pagar em aberto) não mudam — nem ao editar nem ao receber; sem migração automática.

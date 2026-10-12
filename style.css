@@ -708,3 +708,27 @@ tr.prod-row:hover td { background: #F7FAFF; }
 #fotoPrevia[hidden] { display: none; }
 #fotoPrevia .fp-grande { width: 100%; height: 280px; object-fit: contain; background: #fff; border-radius: 10px; }
 #fotoPrevia b { font-size: 13px; color: var(--blue-800); text-align: center; }
+
+/* v27.3: abas do cadastro, saldo do consignante e dica ao passar o mouse */
+.ct-tabs { display: flex; gap: 6px; margin: -4px 0 14px; border-bottom: 1.5px solid var(--line); }
+.ct-tabs button { border: 0; background: none; font: inherit; font-weight: 900; color: var(--ink-3); padding: 8px 12px; border-bottom: 3px solid transparent; margin-bottom: -1.5px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.ct-tabs button.on { color: var(--blue-700); border-bottom-color: var(--yellow); }
+.sd-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sd-kpis > div { background: var(--bg); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.sd-kpis span { font-size: 11.5px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-3); }
+.sd-kpis b { font-size: 18px; } .sd-kpis small { font-size: 11.5px; color: var(--ink-3); font-weight: 700; }
+.sd-dia { border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; background: #fff; }
+.sd-dia summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 96px 1fr auto auto; gap: 12px; align-items: center; padding: 10px 12px; font-weight: 800; }
+.sd-dia summary::-webkit-details-marker { display: none; }
+.sd-dia summary::before { content: '▸'; position: absolute; margin-left: -9px; color: var(--ink-3); }
+.sd-dia[open] summary { border-bottom: 1.5px solid var(--line); }
+.sd-data { font-weight: 900; } .sd-val { font-weight: 900; font-size: 15px; }
+.sd-tab { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.sd-tab th, .sd-tab td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.sd-tab th { font-size: 11px; text-transform: uppercase; color: var(--ink-3); }
+.sd-tab .r { text-align: right; }
+.tip { position: relative; cursor: help; border-bottom: 1px dotted var(--ink-3); }
+#tipBox { position: fixed; z-index: 2000; pointer-events: none; white-space: pre; background: var(--blue-900); color: #fff; font-size: 12px; font-weight: 700; line-height: 1.5; padding: 8px 10px; border-radius: 10px; box-shadow: 0 10px 24px rgba(0,0,0,.25); max-width: min(420px, 92vw); }
+.sd-kpis .tip { border-bottom: 0; }
+.ac-compra .ac-hint { white-space: normal; }
+@media (max-width: 600px) { .sd-kpis { grid-template-columns: 1fr; } .sd-dia summary { grid-template-columns: 1fr auto; } .sd-dia summary .muted { display: none; } }

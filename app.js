@@ -24,9 +24,9 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27.2.1';
+const APP_VERSAO = '27.3';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
-const APP_DATA_VERSAO = '28/09/2026';
+const APP_DATA_VERSAO = '09/10/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -226,7 +226,9 @@ const Store = {
   },
   async commit(ops) {
     if (!ops.length) return;
+    const lotes = ops.some(o => o.sheet === 'vendas') ? lotesConsigAfetados(ops) : null;
     this.apply(ops);
+    if (lotes && lotes.set.size) ops = [...ops, ...opsLotesConsig(lotes.set, lotes.datas)];
     if (this.online) this.queue.push(...ops);
     this.saveCache();
     render();
@@ -425,22 +427,96 @@ function calcRepasse(v, it) {
   const imposto = r2(vendido * tx.imposto / 100), comissao = r2(vendido * tx.comissao / 100);
   return { ...tx, vendido, taxaPlat, impostoV: imposto, comissaoV: comissao, repasse: r2(vendido - taxaPlat - imposto - comissao) };
 }
-function efeitosConsignado(v) {
-  const ops = [];
-  const pags = Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === v.id);
-  if (pags.some(r => r.status === 'Pago')) return ops;   // já repassado: não mexe
-  pags.forEach(r => ops.push(del('pagar', r.id)));
-  if (v.status !== 'Atendido' || ehInterna(v)) return ops;
-  const venc = ehCanalJamble(v.canal) ? addDias(v.data || hoje(), JAMBLE_DIAS) : (v.vencimento || v.data || hoje());
-  for (const it of v.itens || []) {
-    const c = calcRepasse(v, it); if (!c || c.repasse <= 0) continue;
-    ops.push(up('pagar', {
-      id: uid(), descricao: `Repasse consignado · venda nº ${v.numero} · ${nomeProduto(it.produtoId)}`, contatoId: c.donoId, categoria: 'Repasse consignado',
-      vencimento: venc, valor: c.repasse, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'consig', origemId: v.id,
-      obs: `Vendido ${brl(c.vendido)} − taxa ${v.canal || 'plataforma'} ${brl(c.taxaPlat)} − imposto ${fmtPct(c.imposto)}% ${brl(c.impostoV)} − comissão ${fmtPct(c.comissao)}% ${brl(c.comissaoV)}`, criadoEm: agora(),
-    }));
+/* v27.3: dica flutuante (data-tip) — fica por cima de tabelas e janelas, sem ser cortada */
+(() => {
+  let box = null;
+  const mostrar = el => {
+    if (!box) { box = document.createElement('div'); box.id = 'tipBox'; }
+    (document.querySelector('dialog[open]') || document.body).appendChild(box);
+    box.textContent = el.dataset.tip; box.hidden = false;
+    const r = el.getBoundingClientRect(), w = box.offsetWidth, h = box.offsetHeight;
+    let left = Math.min(innerWidth - w - 8, Math.max(8, r.left)), top = r.bottom + 6;
+    if (top + h > innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    Object.assign(box.style, { left: left + 'px', top: top + 'px' });
+  };
+  document.addEventListener('mouseover', e => { const el = e.target.closest && e.target.closest('[data-tip]'); if (el) mostrar(el); else if (box) box.hidden = true; });
+  document.addEventListener('scroll', () => { if (box) box.hidden = true; }, true);
+})();
+/* v27.3: repasses de consignado agrupados em LOTE — 1 conta a pagar por dono + data da venda.
+   O lote é recalculado sempre que uma venda daquele dia muda (Store.commit chama lotesConsigAfetados/opsLotesConsig).
+   Se o lote já foi pago e entra venda nova no mesmo dia, abre um complemento só com a diferença. */
+function efeitosConsignado(v) { return []; }
+const loteConsigKey = (dono, data) => `lote:${dono}:${data}`;
+function chavesConsigVenda(v, set) {
+  if (!v) return set;
+  for (const it of v.itens || []) { const p = produto(it.produtoId); if (p && p.consigId && v.data) set.add(loteConsigKey(p.consigId, v.data)); }
+  return set;
+}
+/* detalhes do lote calculados a partir das vendas (fonte da verdade) */
+function detalheLoteConsig(dono, data) {
+  const itens = [];
+  for (const v of Store.data.vendas) {
+    if (v.data !== data || v.status !== 'Atendido' || ehInterna(v)) continue;
+    for (const it of v.itens || []) {
+      const p = produto(it.produtoId); if (!p || p.consigId !== dono) continue;
+      const c = calcRepasse(v, it); if (!c) continue;
+      itens.push({ v, it, c });
+    }
   }
+  const soma = k => r2(itens.reduce((t, x) => t + num(x.c[k]), 0));
+  return { dono, data, itens, vendido: soma('vendido'), taxa: soma('taxaPlat'), imposto: soma('impostoV'), comissao: soma('comissaoV'), repasse: soma('repasse'),
+    jamble: itens.some(x => ehCanalJamble(x.v.canal)), vendas: new Set(itens.map(x => x.v.id)).size };
+}
+const tipLoteConsig = d => `Valor bruto vendido: ${brl(d.vendido)}\n− Taxa da plataforma: ${brl(d.taxa)}\n− Imposto: ${brl(d.imposto)}\n− Comissão da loja: ${brl(d.comissao)}\n= Líquido para o dono: ${brl(d.repasse)}`;
+/* contas a pagar que pertencem ao lote (inclui as antigas, lançadas por venda, antes da v27.3) */
+function registrosLoteConsig(dono, data, datasVenda) {
+  const k = loteConsigKey(dono, data);
+  const dataDe = id => (datasVenda && datasVenda[id]) || Store.data.vendas.find(v => v.id === id)?.data;
+  return Store.data.pagar.filter(r => r.origem === 'consig' && r.contatoId === dono && (r.origemId === k || (!String(r.origemId || '').startsWith('lote:') && dataDe(r.origemId) === data)));
+}
+function opsLoteConsig(k, datasVenda) {
+  const [, dono, data] = k.split(':');
+  const d = detalheLoteConsig(dono, data);
+  const regs = registrosLoteConsig(dono, data, datasVenda);
+  const pagos = regs.filter(r => r.status === 'Pago'), abertos = regs.filter(r => r.status !== 'Pago');
+  const jaPago = r2(pagos.reduce((t, r) => t + num(r.valorPago || r.valor), 0));
+  const falta = r2(d.repasse - jaPago);
+  const idMain = 'cg-' + dono + '-' + data;
+  const base = abertos.find(r => r.id === idMain) || abertos.find(r => r.origemId === k) || null;
+  const ops = [];
+  abertos.filter(r => r !== base).forEach(r => ops.push(del('pagar', r.id)));
+  if (falta > 0.004) {
+    const id = base ? base.id : (pagos.some(r => r.id === idMain) ? uid() : idMain);
+    ops.push(up('pagar', {
+      ...(base || {}), id,
+      descricao: `Repasse consignado · vendas de ${dataBR(data)}` + (jaPago ? ' · complemento' : ''),
+      contatoId: dono, categoria: 'Repasse consignado',
+      vencimento: base?.vencimento || (d.jamble ? addDias(data, JAMBLE_DIAS) : data),
+      valor: falta, status: 'Aberto', pagoEm: '', valorPago: '', origem: 'consig', origemId: k,
+      obs: `${d.itens.length} item(ns) em ${d.vendas} venda(s) · bruto ${brl(d.vendido)} − taxa ${brl(d.taxa)} − imposto ${brl(d.imposto)} − comissão ${brl(d.comissao)} = ${brl(d.repasse)}` + (jaPago ? ` · já repassado ${brl(jaPago)}` : ''),
+      criadoEm: base?.criadoEm || agora(),
+    }));
+  } else if (base) ops.push(del('pagar', base.id));
   return ops;
+}
+/* chamado pelo Store.commit: lotes afetados pelas vendas do lote de operações (antes de aplicar) */
+function lotesConsigAfetados(ops) {
+  const set = new Set(), datas = {};
+  for (const op of ops) {
+    if (op.sheet !== 'vendas') continue;
+    const id = op.op === 'upsert' ? op.record.id : op.id;
+    const antigo = Store.data.vendas.find(v => v.id === id);
+    if (antigo) { datas[id] = antigo.data; chavesConsigVenda(antigo, set); }
+    if (op.op === 'upsert') chavesConsigVenda(op.record, set);
+    // registros antigos (por venda) desta venda
+    Store.data.pagar.filter(r => r.origem === 'consig' && r.origemId === id).forEach(r => { const dt = antigo?.data || op.record?.data; if (dt) set.add(loteConsigKey(r.contatoId, dt)); });
+  }
+  return { set, datas };
+}
+function opsLotesConsig(set, datas) {
+  const out = [];
+  for (const k of set) { const o = opsLoteConsig(k, datas); Store.apply(o); out.push(...o); }
+  return out;
 }
 
 /* Efeitos de uma compra: movimentos de entrada + contas a pagar + atualiza custo */
@@ -2329,7 +2405,7 @@ function viewContas(tipo) {
         const s = statusConta(c);
         return `<tr>
           <td class="${s === 'Vencido' ? 'neg strong' : ''}">${dataBR(c.vencimento)}</td>
-          <td class="wrap strong">${esc(c.descricao)}</td>
+          <td class="wrap strong">${c.origem === 'consig' && String(c.origemId || '').startsWith('lote:') ? (() => { const [, dn, dt] = c.origemId.split(':'); const dd = detalheLoteConsig(dn, dt), jp = r2(registrosLoteConsig(dn, dt).filter(r => r.status === 'Pago' && r.id !== c.id).reduce((t, r) => t + num(r.valorPago || r.valor), 0)); return `<span class="tip" data-tip="${esc(tipLoteConsig(dd) + (jp ? `\n\nJá repassado deste dia: ${brl(jp)}\nEsta conta: ${brl(c.valor)}` : ''))}">${esc(c.descricao)}</span>`; })() : esc(c.descricao)}</td>
           <td class="wrap">${esc(nomeContato(c.contatoId))}</td>
           <td class="muted">${esc(c.categoria)}</td>
           <td class="r strong">${brl(c.valor)}</td>
@@ -2579,12 +2655,13 @@ function viewContatos(el, tipo) {
         <td>${esc(c.documento)}</td><td>${c.telefone ? `<a href="https://wa.me/55${esc(String(c.telefone).replace(/\D/g, ''))}" target="_blank" rel="noopener">${esc(c.telefone)}</a>` : ''}</td>
         <td>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</td><td>${esc(c.cidade)}${c.uf ? '/' + esc(c.uf) : ''}</td>
         <td class="r">${m.n}</td><td class="r strong">${brl(m.t)}</td><td class="muted">${dataBR(m.ult)}</td>
-        <td class="act"><span class="inner"><button class="icon-btn" data-edit="${c.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${c.id}" title="Excluir">${ICON.del}</button></span></td>
+        <td class="act"><span class="inner">${!F && ehConsignante(c) ? `<button class="btn ghost sm" data-saldo="${c.id}" title="Vendas dos produtos em consignação e saldo a receber">Saldo ${brl(saldoCarteira(c.id))}</button>` : ''}<button class="icon-btn" data-edit="${c.id}" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-del="${c.id}" title="Excluir">${ICON.del}</button></span></td>
       </tr>`; }).join('') : emptyRow(9, Store.data.contatos.length ? 'Nenhum resultado' : (F ? 'Nenhum fornecedor cadastrado' : 'Nenhum cliente cadastrado'), F ? '🏭' : '👥')}</tbody>
     </table></div>`;
   bindSearch('q' + k, 'q' + k);
   $('#novoCont').onclick = () => formContato(null, tipo);
   $$('[data-edit]', el).forEach(b => b.onclick = () => formContato(contato(b.dataset.edit)));
+  $$('[data-saldo]', el).forEach(b => b.onclick = () => formContato(contato(b.dataset.saldo), undefined, 'saldo'));
   $$('[data-del]', el).forEach(b => b.onclick = () => {
     const c = contato(b.dataset.del);
     const usado = Store.data.vendas.some(v => v.clienteId === c.id) || Store.data.compras.some(v => v.fornecedorId === c.id) || [...Store.data.pagar, ...Store.data.receber].some(x => x.contatoId === c.id);
@@ -2593,17 +2670,62 @@ function viewContatos(el, tipo) {
   });
 }
 
-function formContato(c, tipo = 'Cliente') {
+/* v27.3: aba "Saldo" do consignante — vendas líquidas (já sem taxa, imposto e comissão) por data */
+const ehConsignante = c => !!c && (c.consignante === 'sim' || Store.data.produtos.some(p => p.consigId === c.id));
+function saldoConsigHTML(dono) {
+  const datas = new Set();
+  for (const v of Store.data.vendas) if (v.status === 'Atendido' && !ehInterna(v)) for (const it of v.itens || []) { const p = produto(it.produtoId); if (p?.consigId === dono && v.data) datas.add(v.data); }
+  const dias = [...datas].sort().reverse().map(dt => {
+    const d = detalheLoteConsig(dono, dt), regs = registrosLoteConsig(dono, dt);
+    const pago = r2(regs.filter(r => r.status === 'Pago').reduce((t, r) => t + num(r.valorPago || r.valor), 0));
+    const aberto = regs.filter(r => r.status !== 'Pago');
+    return { ...d, pago, aberto, venc: aberto[0]?.vencimento || '' };
+  });
+  const tot = k => r2(dias.reduce((t, d) => t + num(d[k]), 0));
+  const totais = { vendido: tot('vendido'), taxa: tot('taxa'), imposto: tot('imposto'), comissao: tot('comissao'), repasse: tot('repasse') };
+  const saldo = saldoCarteira(dono), repassado = tot('pago');
+  const sit = d => d.pago >= d.repasse - 0.004 && d.repasse > 0 ? '<span class="badge green">Repassado</span>'
+    : d.pago > 0 ? `<span class="badge amber">Parcial · falta ${brl(r2(d.repasse - d.pago))}</span>`
+    : `<span class="badge amber">A pagar${d.venc ? ' · ' + dataBR(d.venc) : ''}</span>`;
+  const tipIt = x => `Valor bruto: ${brl(x.c.vendido)}\n− Taxa ${x.v.canal || 'plataforma'}: ${brl(x.c.taxaPlat)}\n− Imposto (${fmtPct(x.c.imposto)}%): ${brl(x.c.impostoV)}\n− Comissão (${fmtPct(x.c.comissao)}%): ${brl(x.c.comissaoV)}\n= Líquido: ${brl(x.c.repasse)}`;
+  return `<div class="sd-wrap">
+    <div class="sd-kpis">
+      <div class="tip" data-tip="${esc(tipLoteConsig(totais))}"><span>Total líquido vendido</span><b>${brl(totais.repasse)}</b><small>bruto ${brl(totais.vendido)}</small></div>
+      <div><span>Já repassado</span><b class="pos">${brl(repassado)}</b><small>pago em dinheiro ou usado em compras</small></div>
+      <div><span>Saldo a receber</span><b class="${saldo > 0 ? 'neg' : ''}">${brl(saldo)}</b><small>em Contas a pagar</small></div>
+    </div>
+    <p class="muted" style="margin:10px 0 8px;font-size:12.5px;font-weight:700">Passe o mouse sobre o valor para ver o cálculo (bruto − taxa − imposto − comissão). Clique no dia para ver cada venda.</p>
+    ${dias.length ? dias.map(d => `<details class="sd-dia">
+      <summary><span class="sd-data">${dataBR(d.data)}</span><span class="muted">${d.itens.length} item(ns) · ${d.vendas} venda(s)</span>
+        <span class="sd-val tip" data-tip="${esc(tipLoteConsig(d))}">${brl(d.repasse)}</span>${sit(d)}</summary>
+      <table class="sd-tab"><thead><tr><th>Venda</th><th>Produto</th><th class="r">Qtd</th><th class="r">Bruto</th><th class="r">Taxa</th><th class="r">Imposto</th><th class="r">Comissão</th><th class="r">Líquido</th></tr></thead><tbody>
+      ${d.itens.map(x => `<tr><td>nº ${esc(x.v.numero)}<br><small class="muted">${esc(nomeContato(x.v.clienteId) || '')}</small></td><td class="wrap">${esc(nomeProduto(x.it.produtoId))}</td><td class="r">${qtdFmt(x.it.qtd)}</td>
+        <td class="r">${brl(x.c.vendido)}</td><td class="r">${brl(x.c.taxaPlat)}</td><td class="r">${brl(x.c.impostoV)}</td><td class="r">${brl(x.c.comissaoV)}</td>
+        <td class="r strong"><span class="tip" data-tip="${esc(tipIt(x))}">${brl(x.c.repasse)}</span></td></tr>`).join('')}
+      </tbody></table></details>`).join('') : '<p class="muted" style="font-weight:700">Nenhuma venda de produto deste consignante ainda.</p>'}
+  </div>`;
+}
+function formContato(c, tipo = 'Cliente', aba = '') {
   const novo = !c;
   c = c || { tipo };
   const nomeTipo = c.tipo === 'Fornecedor' ? 'fornecedor' : c.tipo === 'Ambos' ? 'cadastro' : 'cliente';
   Modal.open({
-    title: novo ? 'Novo ' + nomeTipo : 'Editar ' + nomeTipo,
+    title: novo ? 'Novo ' + nomeTipo : (ehConsignante(c) ? c.nome : 'Editar ' + nomeTipo),
     body: `
+      ${!novo && ehConsignante(c) ? `<div class="ct-tabs"><button type="button" data-tab="cad" class="on">Cadastro</button><button type="button" data-tab="saldo">Saldo <span class="badge">${brl(saldoCarteira(c.id))}</span></button></div>` : ''}
+      <div data-pane="cad">
       <input type="hidden" name="tipo" value="${esc(c.tipo)}">
       ${camposPessoa('pc', c, { nick: c.tipo !== 'Fornecedor' })}
-      <div style="margin-top:14px">${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`)}</div>`,
-    onOpen: body => ligarDocumento($('[data-pc=documento]', body), $('[data-pc=docStatus]', body), k => $(`[data-pc=${k}]`, body), c.id),
+      <div style="margin-top:14px">${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`)}</div>
+      </div>
+      ${!novo && ehConsignante(c) ? `<div data-pane="saldo" hidden>${saldoConsigHTML(c.id)}</div>` : ''}`,
+    onOpen: body => {
+      ligarDocumento($('[data-pc=documento]', body), $('[data-pc=docStatus]', body), k => $(`[data-pc=${k}]`, body), c.id);
+      const tabs = $$('[data-tab]', body);
+      const ir = t => { tabs.forEach(b => b.classList.toggle('on', b.dataset.tab === t)); $$('[data-pane]', body).forEach(pn => pn.hidden = pn.dataset.pane !== t); $('#modalSubmit').style.display = t === 'cad' ? '' : 'none'; };
+      tabs.forEach(b => b.onclick = () => ir(b.dataset.tab));
+      if (aba && tabs.length) ir(aba);
+    },
     onSubmit: (fd, body) => {
       const d = lerPessoa(body, 'pc');
       if (!d.nome) { toast('Informe o nome ou a razão social', 'err'); $('[data-pc=nome]', body).focus(); return false; }
@@ -3519,7 +3641,7 @@ function formConfirmarVenda(v) {
 const UN_INSUMO = ['UN', 'CX', 'PCT', 'RL', 'FD', 'KG', 'M'];
 function itemRowInsumo(it) {
   return `<tr>
-    <td class="c-prod"><input data-i="desc" list="dlInsumos" autocomplete="off" value="${esc(it.descricao || '')}" placeholder="ex.: Caixa de papelão 20×15×10"></td>
+    <td class="c-prod"><div class="ac ac-compra"><input class="ac-txt" data-i="desc" autocomplete="off" value="${esc(it.descricao || '')}" placeholder="Digite 2 letras do insumo…"><div class="ac-list" hidden></div></div></td>
     <td class="c-un"><select data-i="un">${opt(UN_INSUMO, it.un || 'UN')}</select></td>
     <td class="c-qtd"><input data-i="qtd" inputmode="decimal" value="${esc(it.qtd ?? 1)}"></td>
     <td class="c-val"><input data-i="valor" inputmode="decimal" value="${dec(it.valor)}" placeholder="0,00"></td>
@@ -3548,6 +3670,43 @@ function efeitosInsumo(c) {
    ========================================================= */
 const insumoItem = id => Store.data.insumoItens.find(x => x.id === id);
 const insumoPorNome = n => Store.data.insumoItens.find(x => nomeChave(x.nome) === nomeChave(n));
+/* v27.3: lista de sugestões ao digitar a descrição na compra de insumos (insumos cadastrados + descrições já usadas) */
+function insumoPicker(tr, onEscolha) {
+  const txt = $('[data-i=desc]', tr), list = $('.ac-list', tr);
+  if (!txt || !list || txt.dataset.ac) return; txt.dataset.ac = '1';
+  let itens = [], ativo = -1;
+  const fechar = () => { list.hidden = true; ativo = -1; };
+  const marcar = () => $$('.ac-item', list).forEach((el, i) => el.classList.toggle('on', i === ativo));
+  const posicionar = () => { const r = txt.getBoundingClientRect(); Object.assign(list.style, { position: 'fixed', left: r.left + 'px', top: (r.bottom + 4) + 'px', width: Math.min(innerWidth - r.left - 16, Math.max(r.width, 420)) + 'px', right: 'auto', maxHeight: Math.max(160, Math.min(320, innerHeight - r.bottom - 16)) + 'px' }); };
+  const fontes = () => {
+    const sal = saldosInsumos(), vistos = new Set(), r = [];
+    for (const x of Store.data.insumoItens.filter(x => x.ativo !== 'nao')) { vistos.add(nomeChave(x.nome)); r.push({ nome: x.nome, un: x.unidade || 'UN', custo: num(x.custo), est: sal[x.id] || 0, cad: true }); }
+    for (const c of Store.data.insumos) for (const i of c.itens || []) { const k = nomeChave(i.descricao); if (!k || vistos.has(k)) continue; vistos.add(k); r.push({ nome: i.descricao, un: i.un || 'UN', custo: num(i.valor), cad: false }); }
+    return r;
+  };
+  const abrir = () => {
+    const q = txt.value.trim();
+    if (q.length < 2) { itens = []; list.innerHTML = '<div class="ac-hint">Digite pelo menos 2 letras do insumo…</div>'; list.hidden = false; posicionar(); return; }
+    itens = fontes().filter(x => match(q, x.nome)).sort((a, b) => a.nome.localeCompare(b.nome)).slice(0, 12);
+    const exato = itens.some(x => nomeChave(x.nome) === nomeChave(q));
+    list.innerHTML = itens.map((x, i) => `<div class="ac-item" data-k="${i}"><b>${esc(x.nome)}</b><small>${esc(x.un)} · último custo ${brl(x.custo)}${x.cad ? ` · estoque ${qtdFmt(x.est)}` : ' · usado em compras anteriores'}</small></div>`).join('')
+      + (exato ? '' : `<div class="ac-hint">${itens.length ? 'Não é nenhum desses? ' : 'Nenhum insumo encontrado. '}“${esc(q)}” será cadastrado como <b>insumo novo</b> quando a compra for recebida.</div>`);
+    ativo = itens.length ? 0 : -1; marcar(); list.hidden = false; posicionar();
+  };
+  const escolher = x => { txt.value = x.nome; fechar(); onEscolha && onEscolha(tr, x); };
+  $('#modalBody').addEventListener('scroll', () => { if (!list.hidden) posicionar(); }, { passive: true });
+  txt.addEventListener('input', abrir);
+  txt.addEventListener('focus', () => { if (txt.value.trim()) abrir(); });
+  txt.addEventListener('blur', () => setTimeout(fechar, 150));
+  txt.addEventListener('keydown', e => {
+    if (list.hidden || !itens.length) { if (e.key === 'Escape' && !list.hidden) { fechar(); e.preventDefault(); e.stopPropagation(); } return; }
+    if (e.key === 'ArrowDown') { ativo = Math.min(itens.length - 1, ativo + 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { ativo = Math.max(0, ativo - 1); marcar(); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (ativo >= 0) escolher(itens[ativo]); }
+    else if (e.key === 'Escape') { fechar(); e.preventDefault(); e.stopPropagation(); }
+  });
+  list.addEventListener('mousedown', e => { const it = e.target.closest('.ac-item'); if (!it) return; e.preventDefault(); escolher(itens[+it.dataset.k]); });
+}
 const ultimoBalInsumo = () => [...Store.data.insumoBals].sort((a, b) => ((b.data || '') + (b.criadoEm || '')).localeCompare((a.data || '') + (a.criadoEm || '')))[0] || null;
 const depoisDoBal = (m, bal) => !bal || (m.data || '') > bal.data || ((m.data || '') === bal.data && (m.criadoEm || '') > (bal.criadoEm || ''));
 /* saldo = contagem do último balanço + entradas/saídas lançadas depois dele */
@@ -3929,7 +4088,6 @@ function formInsumo(p) {
     title: novo ? 'Nova compra de insumos' : `Compra de insumos nº ${p.numero}`,
     submit: 'Salvar compra',
     body: `
-      <datalist id="dlInsumos">${descs.map(d => `<option value="${esc(d)}">`).join('')}</datalist>
       <div class="grid g4">
         <label class="f">Nº da compra<div class="num-fixo">${esc(numeroPrevisto)}${novo ? '<small>confirmado ao salvar</small>' : ''}</div></label>
         ${field('Data *', inp('data', p.data, 'type="date" required'))}
@@ -3977,7 +4135,10 @@ function formInsumo(p) {
       };
       tb.addEventListener('input', recalc);
       tb.addEventListener('click', e => { const b = e.target.closest('[data-i=rm]'); if (b) { if ($$('tr', tb).length > 1) b.closest('tr').remove(); recalc(); } });
-      $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowInsumo({ qtd: 1, un: 'UN' })); $('tr:last-child [data-i=desc]', tb).focus(); recalc(); };
+      const aoEscolher = (tr, x) => { $('[data-i=un]', tr).value = UN_INSUMO.includes(x.un) ? x.un : 'UN'; const v = $('[data-i=valor]', tr); if (!num(v.value) && x.custo) v.value = dec(x.custo); recalc(); setTimeout(() => $('[data-i=qtd]', tr).select(), 20); };
+      const ligarLinhas = () => $$('tr', tb).forEach(tr => insumoPicker(tr, aoEscolher));
+      $('#addItem', body).onclick = () => { tb.insertAdjacentHTML('beforeend', itemRowInsumo({ qtd: 1, un: 'UN' })); ligarLinhas(); $('tr:last-child [data-i=desc]', tb).focus(); recalc(); };
+      ligarLinhas();
       ['#pedFrete', '#pedDesc'].forEach(s => $(s, body).oninput = recalc);
       $('#pgForma', body).onchange = recalc;
       const pnlC = $('#pnlContato', body);
@@ -4076,6 +4237,15 @@ function migracaoV19() {
   let sc = ''; try { sc = localStorage.getItem('cheel_erp_semcusto') || ''; } catch (e) {}
   if (!sc) { Store.data.produtos.filter(p => /avuls/.test(norm(p.nome)) && !num(p.custo) && !p.consigId && !semCusto(p)).forEach(p => add(up('produtos', { ...p, semCusto: 'sim' }))); try { localStorage.setItem('cheel_erp_semcusto', '1'); } catch (e) {} }
   // v22.2: acerta custos lançados antes do custo médio (1x por aparelho; o cálculo é o mesmo em qualquer aparelho)
+  // v27.3: junta os repasses de consignado (antes 1 conta por produto) em 1 conta por dono + dia (1x por aparelho)
+  let lt = ''; try { lt = localStorage.getItem('cheel_erp_lotes273') || ''; } catch (e) {}
+  if (lt !== '1') {
+    const set = new Set();
+    Store.data.vendas.forEach(v => { if (v.status === 'Atendido' && !ehInterna(v)) chavesConsigVenda(v, set); });
+    Store.data.pagar.filter(r => r.origem === 'consig' && !String(r.origemId || '').startsWith('lote:')).forEach(r => { const v = Store.data.vendas.find(x => x.id === r.origemId); if (v) set.add(loteConsigKey(r.contatoId, v.data)); });
+    for (const k of set) opsLoteConsig(k).forEach(add);
+    try { localStorage.setItem('cheel_erp_lotes273', '1'); } catch (e) {}
+  }
   let rc = ''; try { rc = localStorage.getItem('cheel_erp_recalc') || ''; } catch (e) {}
   if (rc !== '22.2') { opsRecalcularCustos().forEach(add); try { localStorage.setItem('cheel_erp_recalc', '22.2'); } catch (e) {} }
   if (ops.length) Store.commit(ops).then(() => render());
