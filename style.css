@@ -732,3 +732,20 @@ tr.prod-row:hover td { background: #F7FAFF; }
 .sd-kpis .tip { border-bottom: 0; }
 .ac-compra .ac-hint { white-space: normal; }
 @media (max-width: 600px) { .sd-kpis { grid-template-columns: 1fr; } .sd-dia summary { grid-template-columns: 1fr auto; } .sd-dia summary .muted { display: none; } }
+
+/* v27.4: produto aberto (vendido em partes) */
+.ab-box { margin: 12px 0; display: grid; gap: 8px; }
+.ab-bar { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--blue-50); border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; color: var(--ink-2); position: sticky; top: -18px; z-index: 5; }
+.ab-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; border: 1.5px dashed var(--blue-500); border-radius: 12px; padding: 12px; background: #fff; }
+.ab-form .ab-lembrar { flex-basis: 100%; font-size: 13px; }
+.ab-acts { display: flex; gap: 8px; margin-left: auto; }
+.ab-grupo { border-left: 5px solid var(--ab); background: #fff; border-radius: 10px; box-shadow: 0 0 0 1.5px var(--line) inset; padding: 10px 12px; display: grid; gap: 6px; }
+.ab-tit { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ab-num { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+.ab-ops { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px; font-weight: 700; }
+.ab-ops input { width: 70px; } .ab-ops select { width: auto; }
+.ab-tag { display: inline-block; background: var(--ab, #7B4BC4); color: #fff; font-size: 11.5px; font-weight: 900; padding: 2px 8px; border-radius: 999px; }
+tr.ab-linha td:first-child { box-shadow: inset 4px 0 0 var(--ab); }
+.ab-chk { display: inline-flex; margin-right: 6px; vertical-align: middle; }
+.ab-chk input { width: 17px; height: 17px; accent-color: var(--blue-600); }
+.imp-itens td:first-child .ab-chk + select { width: calc(100% - 30px); }

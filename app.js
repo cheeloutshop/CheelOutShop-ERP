@@ -24,9 +24,9 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27.3';
+const APP_VERSAO = '27.4';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
-const APP_DATA_VERSAO = '09/10/2026';
+const APP_DATA_VERSAO = '11/10/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -311,6 +311,8 @@ function statusConta(c) {
 }
 function proxNumero(lista) { return lista.reduce((mx, r) => Math.max(mx, num(r.numero)), 0) + 1; }
 function totalItens(itens) { return r2(itens.reduce((s, it) => s + num(it.qtd) * num(it.valor), 0)); }
+/* v27.4: item que é PARTE de um produto aberto (ex.: 1 de 5 vendas de um Box Fichário) baixa só a fração do produto */
+const qtdEstoqueItem = it => it && it.abertura ? num(it.fracao) : num(it && it.qtd);
 
 function gerarParcelas(total, n, primeiro) {
   n = Math.max(1, Math.floor(num(n)) || 1);
@@ -333,9 +335,10 @@ function efeitosVenda(v) {
   if (v.status === 'Atendido') {
     for (const it of v.itens) {
       ops.push(up('movimentos', {
-        id: uid(), data: v.data, produtoId: it.produtoId, tipo: 'saida', quantidade: num(it.qtd),
+        id: uid(), data: v.data, produtoId: it.produtoId, tipo: 'saida', quantidade: qtdEstoqueItem(it),
         custoUnit: custoSaidaItem(v, it), origem: interna ? (sorteio ? 'sorteio' : 'retirada') : 'venda', origemId: v.id,
-        obs: interna ? (sorteio ? `Sorteio${v.referencia ? ': ' + v.referencia : ''} · nº ${v.numero}` : `Retirada de sócio: ${nomeContato(v.clienteId) || 'não informado'} · nº ${v.numero}`) : 'Venda nº ' + v.numero, criadoEm: agora(),
+        obs: (interna ? (sorteio ? `Sorteio${v.referencia ? ': ' + v.referencia : ''} · nº ${v.numero}` : `Retirada de sócio: ${nomeContato(v.clienteId) || 'não informado'} · nº ${v.numero}`) : 'Venda nº ' + v.numero)
+          + (it.abertura ? ` · parte de produto aberto (${fmtPct(num(it.fracao) * 100)}% de 1 un.)` : ''), criadoEm: agora(),
       }));
     }
     if (interna) recs.forEach(r => ops.push(del('receber', r.id)));   // retirada/sorteio não gera valor a receber
@@ -1294,7 +1297,7 @@ function verProduto(p) {
   if (!p) return;
   const s = saldos()[p.id] || 0, pr = num(p.preco), cu = num(p.custo);
   const vendas = Store.data.vendas.filter(v => vendaReal(v) && v.itens.some(i => i.produtoId === p.id));
-  const qV = vendas.reduce((t, v) => t + v.itens.filter(i => i.produtoId === p.id).reduce((a, i) => a + num(i.qtd), 0), 0);
+  const qV = vendas.reduce((t, v) => t + v.itens.filter(i => i.produtoId === p.id).reduce((a, i) => a + qtdEstoqueItem(i), 0), 0);
   const tx = p.consigId ? taxasConsig(p) : null;
   const linha = (l, v) => `<div class="vp-l"><span>${l}</span><b>${v}</b></div>`;
   Modal.open({
@@ -1341,8 +1344,8 @@ function historicoProduto(p) {
     const bruto = v.itens.reduce((s, i) => s + num(i.qtd) * num(i.valor), 0);
     for (const i of its) {
       const fator = bruto ? num(v.total) / bruto : 1;               // desconto rateado
-      const unit = num(i.valor) * fator;
-      vendas.push({ data: v.data, num: v.numero, canal: v.canal, qtd: num(i.qtd), unit, custo, interna: ehInterna(v), cli: nomeContato(v.clienteId) });
+      const qe = qtdEstoqueItem(i), unit = qe ? num(i.valor) * num(i.qtd) * fator / qe : 0;
+      vendas.push({ data: v.data, num: v.numero, canal: v.canal, qtd: qe, unit, custo, interna: ehInterna(v), cli: nomeContato(v.clienteId) + (i.abertura ? ' · parte de abertura' : '') });
     }
   }
   vendas.sort((a, b) => b.data.localeCompare(a.data));
@@ -1583,18 +1586,32 @@ async function gerarPdfBalanco({ data, linhas, previa }) {
    VENDAS & COMPRAS (pedidos com itens)
    ========================================================= */
 function badgeVenda(s) { return `<span class="badge ${{ 'Atendido': 'green', 'Recebido': 'green', 'Cancelado': 'gray', 'Orçamento': 'amber', 'Pendente': 'red' }[s] || ''}">${esc(s)}</span>`; }
-const itemNome = i => i.produtoId && produto(i.produtoId) ? produto(i.produtoId).nome : (i.descricao || '(sem produto)');
-const apelidosDe = p => String(p?.apelidos || '').split(' || ').map(s => s.trim()).filter(Boolean);
+const itemNome = i => (i.produtoId && produto(i.produtoId) ? produto(i.produtoId).nome : (i.descricao || '(sem produto)')) + (i.abertura ? ' · parte de abertura' : '');
+const partesApelidos = p => String(p?.apelidos || '').split(' || ').map(s => s.trim()).filter(Boolean);
+const apelidosDe = p => partesApelidos(p).filter(a => !a.startsWith('abre:'));
 function comApelido(p, nome) {
   const n = String(nome || '').trim();
   if (!p || !n || norm(n) === norm(p.nome) || apelidosDe(p).some(a => norm(a) === norm(n))) return null;
-  return { ...p, apelidos: [...apelidosDe(p), n].join(' || ') };
+  return { ...p, apelidos: [...partesApelidos(p), n].join(' || ') };
+}
+/* v27.4: regra de abertura — anúncio com este nome = parte de 1 unidade aberta deste produto.
+   "#1", "#2" no fim do nome separam unidades diferentes abertas no mesmo show. */
+const baseAnuncio = d => { const m = norm(d).replace(/\s+/g, ' ').trim().match(/^(.*?)\s*#\s*(\d+)$/); return m ? { base: m[1].trim(), n: m[2] } : { base: norm(d).replace(/\s+/g, ' ').trim(), n: '' }; };
+const regrasAbertura = p => partesApelidos(p).filter(a => a.startsWith('abre:')).map(a => a.slice(5));
+function comRegraAbertura(p, desc) {
+  const b = baseAnuncio(desc).base; if (!p || !b || regrasAbertura(p).some(r => norm(r) === b)) return null;
+  return { ...p, apelidos: [...partesApelidos(p), 'abre:' + b].join(' || ') };
+}
+function regraAberturaPara(desc) {
+  const { base, n } = baseAnuncio(desc); if (!base) return null;
+  const p = Store.data.produtos.find(x => x.ativo !== 'nao' && regrasAbertura(x).some(r => norm(r) === base));
+  return p ? { p, n } : null;
 }
 
 function viewPedidos(el, tipo) {
   const V = tipo === 'vendas';
   const key = V ? 'Vend' : 'Comp';
-  actions(`${V ? `<button class="btn ghost" id="impEtq">📄 Importar etiquetas (PDF)</button>` : ''}<button class="btn accent" id="novoPed">${ICON.plus}${V ? 'Nova venda (frente de caixa)' : 'Novo pedido de compra'}</button>`);
+  actions(`${V ? `<button class="btn ghost" id="impEtq">📄 Importar etiquetas (PDF)</button><button class="btn ghost" id="abrirProd" title="Vendas que vieram de um produto aberto (ex.: Box Fichário vendido em partes)">🔓 Produto aberto</button>` : ''}<button class="btn accent" id="novoPed">${ICON.plus}${V ? 'Nova venda (frente de caixa)' : 'Novo pedido de compra'}</button>`);
   const q = UI['q' + key] || '';
   const st = UI['st' + key] || '';
   const mes = UI['m' + key] ?? '';
@@ -1638,7 +1655,7 @@ function viewPedidos(el, tipo) {
   $$('[data-st]', el).forEach(b => b.onclick = () => { UI['st' + key] = b.dataset.st; render(); });
   const find = id => Store.data[tipo].find(p => p.id === id);
   $('#novoPed').onclick = () => (V ? formVenda() : formCompra());
-  if (V) $('#impEtq').onclick = abrirImportarEtiquetas;
+  if (V) { $('#impEtq').onclick = abrirImportarEtiquetas; $('#abrirProd').onclick = () => abrirAberturaVendas(); }
   $$('[data-edit]', el).forEach(b => b.onclick = () => { const x = find(b.dataset.edit); if (V && x.status === 'Pendente') formConfirmarVenda(x); else (V ? formVenda(x) : formCompra(x)); });
   $$('[data-conf]', el).forEach(b => b.onclick = () => formConfirmarVenda(find(b.dataset.conf)));
   const bp = $('#verPend', el); if (bp) bp.onclick = () => { UI['st' + key] = 'Pendente'; render(); };
@@ -1685,7 +1702,7 @@ function faltaEstoque(v) {
   // descontar o que esta venda já baixou (em caso de edição)
   Store.data.movimentos.filter(m => m.origemId === v.id && m.tipo === 'saida').forEach(m => { sal[m.produtoId] = (sal[m.produtoId] || 0) + num(m.quantidade); });
   const req = {};
-  v.itens.forEach(i => { req[i.produtoId] = (req[i.produtoId] || 0) + num(i.qtd); });
+  v.itens.forEach(i => { req[i.produtoId] = (req[i.produtoId] || 0) + qtdEstoqueItem(i); });
   const faltas = Object.entries(req).filter(([id, q]) => q > (sal[id] || 0)).map(([id, q]) => `${nomeProduto(id)} (saldo ${qtdFmt(sal[id] || 0)}, pedido ${qtdFmt(q)})`);
   return faltas.length ? `<div class="note warn">Atenção: estoque insuficiente para ${faltas.map(esc).join('; ')}. O saldo ficará negativo.</div>` : '';
 }
@@ -3363,12 +3380,13 @@ function analisarJamble(paginas) {
     const grupos = {};
     for (const l of p.lotes) {
       let d = limpa(l.desc.join(' ')), qtd = 1;
+      const nShow = (d.match(/^Venda\s*n[ºo°]\s*(\d+)/i) || [])[1] || '';
       const q = d.match(/^Qtd:\s*(\d+)\s*-\s*(.*)$/i);
       if (q) { qtd = +q[1]; d = q[2]; } else d = d.replace(/^Venda\s*n[ºo°]\s*\S+\s*-\s*/i, '');
       d = limpa(d.replace(/^-\s*/, '')) || '(sem descrição)';
       const unit = r2(l.bruto / qtd);
-      const k = norm(d) + '|' + unit;
-      if (!grupos[k]) grupos[k] = { desc: d, qtd: 0, valor: unit, bruto: 0, liq: 0, lotes: 0 };
+      const k = norm(d) + '|' + unit + (nShow ? '|n' + nShow : '');   // itens numerados do show ficam separados (cada um pode ser de uma abertura)
+      if (!grupos[k]) grupos[k] = { desc: d, qtd: 0, valor: unit, bruto: 0, liq: 0, lotes: 0, nShow };
       Object.assign(grupos[k], { qtd: grupos[k].qtd + qtd, bruto: grupos[k].bruto + l.bruto, liq: grupos[k].liq + l.liq, lotes: grupos[k].lotes + 1 });
     }
     const bruto = r2(p.lotes.reduce((s, l) => s + l.bruto, 0)), liq = r2(p.lotes.reduce((s, l) => s + l.liq, 0));
@@ -3410,7 +3428,16 @@ const chipConf = c => c === 'ok' ? '<span class="conf ok">✓ confirmado</span>'
 function abrirImportarEtiquetas() {
   const plats = plataformasAtivas().map(p => [p.nome, p.nome + (num(p.comissao) ? ` (${fmtPct(num(p.comissao))}%)` : '')]);
   const platPadrao = (plataformasAtivas().find(p => /jamble/i.test(p.nome)) || plataformasAtivas()[0] || {}).nome;
-  let pedidos = [], impResumo = null;
+  let pedidos = [], impResumo = null, grupos = [], selec = new Set(), ultPintar = [0, ''], abForm = false;
+  const AB_CORES = ['#7B4BC4', '#E07B00', '#1B8A5A', '#C2185B', '#1565C0', '#8D6E00'];
+  const itemDe = key => { const [k, n] = key.split(':').map(Number); return pedidos[k] && pedidos[k].itens[n]; };
+  const grupoDe = key => grupos.find(g => g.linhas.includes(key));
+  const linhasValidas = g => g.linhas.filter(key => { const [k] = key.split(':').map(Number); return pedidos[k] && pedidos[k].incluir && itemDe(key); });
+  function resumoGrupo(g) {
+    const ls = linhasValidas(g), vend = r2(ls.reduce((t, key) => { const i = itemDe(key); return t + num(i.qtd) * num(i.valor); }, 0));
+    const pr = produto(g.produtoId), custo = r2(num(pr?.custo) * num(g.qtd));
+    return { ls, vend, custo, lucro: r2(vend - custo) };
+  }
   $('#modal').classList.add('pdv-modal');
   Modal.open({
     title: 'Importar vendas pelo PDF de etiquetas', submit: 'Lançar vendas selecionadas',
@@ -3447,16 +3474,50 @@ function abrirImportarEtiquetas() {
           pedidos = pedidos.map(p => ({ ...p, incluir: true, dup: !!((p.chave && existentes.includes(p.chave)) || (p.pedido && existentes.includes(p.pedido)) || (p.rastreio && existentes.includes(p.rastreio))) }));
           impResumo = resumo;
           pedidos.forEach(p => { if (p.dup) p.incluir = false; p.itens.forEach(i => { const m = acharProduto(i.desc); i.produtoId = m.p ? m.p.id : ''; i.conf = m.conf; }); });
+          grupos = []; selec = new Set(); abForm = false;
+          // regras de abertura salvas: anúncios com o nome combinado já entram agrupados (o "#1", "#2" separa as unidades)
+          pedidos.forEach((p, k) => p.itens.forEach((i, n) => {
+            const r = regraAberturaPara(i.desc); if (!r) return;
+            const chave = r.p.id + '#' + r.n;
+            let g = grupos.find(x => x.auto === chave);
+            if (!g) { g = { id: 'ab-' + uid(), auto: chave, produtoId: r.p.id, qtd: 1, div: 'prop', lembrar: false, linhas: [] }; grupos.push(g); }
+            g.linhas.push(k + ':' + n);
+          }));
           pintar(pags.length, f.name);
         } catch (e) { res.innerHTML = `<div class="note warn">${esc(e.message)}</div>`; }
       }
+      function pintarGrupos() {
+        const box = $('#abBox', body); if (!box) return;
+        const fAnt = $('.ab-form', box), vAnt = fAnt ? { prod: $('[data-ab-prod]', fAnt).value, qtd: $('[data-ab-qtd]', fAnt).value, div: $('[data-ab-div]', fAnt).value, lem: $('[data-ab-lembrar]', fAnt)?.checked } : null;
+        const prods = Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
+        const descs = [...selec].map(k => itemDe(k)?.desc).filter(Boolean), mesmaBase = descs.length && descs.every(d => baseAnuncio(d).base === baseAnuncio(descs[0]).base);
+        box.innerHTML = `<div class="ab-bar"><span><b>🔓 Produto aberto no show?</b> Marque as linhas que vieram dele (caixinha ao lado do produto) e clique no botão. Cada produto aberto vira um grupo.</span>
+            <button type="button" class="btn ${selec.size ? 'primary' : 'ghost'} sm" data-ab-novo ${selec.size ? '' : 'disabled'}>Veio de produto aberto${selec.size ? ` (${selec.size} linha${selec.size > 1 ? 's' : ''})` : ''}</button></div>`
+          + (abForm && selec.size ? `<div class="ab-form">
+            <label class="f" style="flex:2">Produto que foi aberto<select data-ab-prod><option value="">— escolher —</option>${prods.map(x => `<option value="${x.id}">${esc(x.nome)}${num(x.custo) ? ' · custo ' + brl(x.custo) : ''}</option>`).join('')}</select></label>
+            <label class="f" style="width:110px">Unidades abertas<input data-ab-qtd inputmode="decimal" value="1"></label>
+            <label class="f" style="flex:1">Divisão do custo<select data-ab-div><option value="prop">Proporcional ao valor de cada venda</option><option value="igual">Partes iguais</option></select></label>
+            ${mesmaBase ? `<label class="check ab-lembrar"><input type="checkbox" data-ab-lembrar><span>Lembrar: anúncios “${esc(descs[0].replace(/\s*#\s*\d+$/, ''))}” são aberturas deste produto</span></label>` : ''}
+            <div class="ab-acts"><button type="button" class="btn ghost sm" data-ab-cancel>Cancelar</button><button type="button" class="btn primary sm" data-ab-criar>Criar grupo</button></div></div>` : '')
+          + grupos.map((g, gi) => { const r = resumoGrupo(g), pr = produto(g.produtoId); return `<div class="ab-grupo" style="--ab:${AB_CORES[gi % AB_CORES.length]}" data-g="${g.id}">
+              <div class="ab-tit"><span class="ab-tag">Abertura ${gi + 1}</span><b>${esc(pr?.nome || '— produto não encontrado —')}</b>${g.auto ? '<small class="muted">pela regra do nome do anúncio</small>' : ''}</div>
+              <div class="ab-num"><span>${r.ls.length} linha(s)</span><span>vendido <b>${brl(r.vend)}</b></span><span>custo <b>${brl(r.custo)}</b> <small>(${qtdFmt(g.qtd)} × ${brl(pr?.custo)})</small></span><span>lucro <b class="${r.lucro < 0 ? 'neg' : 'pos'}">${brl(r.lucro)}</b></span></div>
+              <div class="ab-ops"><label>Unidades <input data-gq inputmode="decimal" value="${esc(qtdFmt(g.qtd))}"></label>
+                <select data-gdiv><option value="prop" ${g.div === 'prop' ? 'selected' : ''}>Proporcional ao valor</option><option value="igual" ${g.div === 'igual' ? 'selected' : ''}>Partes iguais</option></select>
+                <button type="button" class="btn ghost sm" data-gdes>Desfazer grupo</button></div></div>`; }).join('');
+        const fN = $('.ab-form', box);
+        if (fN && vAnt) { $('[data-ab-prod]', fN).value = vAnt.prod; $('[data-ab-qtd]', fN).value = vAnt.qtd; $('[data-ab-div]', fN).value = vAnt.div; const l = $('[data-ab-lembrar]', fN); if (l) l.checked = !!vAnt.lem; }
+      }
+      function repintar() { const mb = $('#modalBody'), y = mb.scrollTop; pintar(...ultPintar); mb.scrollTop = y; }
       function pintar(nPags, nome) {
+        ultPintar = [nPags, nome];
         if (!pedidos.length) { res.innerHTML = `<div class="note warn">Não encontrei pedidos no arquivo <b>${esc(nome)}</b> (${nPags} páginas). Me envie este PDF para eu ajustar a leitura ao formato da Jamble.</div>`; return; }
         const sb = r2(pedidos.reduce((s, p) => s + (p.bruto || 0), 0)), sl = r2(pedidos.reduce((s, p) => s + (p.liq || 0), 0)), nl = pedidos.reduce((s, p) => s + (p.lotes || 0), 0);
         const confere = impResumo && impResumo.bruto ? (Math.abs(sb - impResumo.bruto) < 0.05 && Math.abs(sl - impResumo.liq) < 0.05) : null;
         res.innerHTML = (impResumo ? `<div class="imp-resumo ${confere ? 'ok' : 'warn'}"><b>Resumo da live (Jamble)</b>
             <span>Vendas: <b>${brl(impResumo.bruto)}</b></span><span>Após taxas: <b>${brl(impResumo.liq)}</b></span><span>Taxas: <b>${brl(impResumo.bruto - impResumo.liq)}</b></span><span>Itens: <b>${impResumo.itens || nl}</b></span>
             <span>${confere ? '✓ a soma dos compradores confere com o resumo' : `⚠ soma lida: ${brl(sb)} / ${brl(sl)} — confira`}</span></div>` : '')
+          + `<div id="abBox" class="ab-box"></div>`
           + `<div class="section-t">${pedidos.length} venda(s) encontrada(s) em ${nPags} página(s) — confira antes de lançar</div>` + pedidos.map((p, k) => `
           <div class="imp-ped ${p.incluir ? '' : 'off'}" data-k="${k}">
             <div class="imp-head">
@@ -3466,21 +3527,27 @@ function abrirImportarEtiquetas() {
               ${p.dup ? '<span class="badge amber">já importado</span>' : ''}
             </div>
             <table class="imp-itens"><thead><tr><th>Produto no ERP</th><th>Qtd</th><th>Valor unit.</th><th class="r">Subtotal</th></tr></thead><tbody>
-            ${p.itens.length ? p.itens.map((i, n) => `<tr data-n="${n}">
-              <td><select data-prod><option value="">— sem cadastro (venda fica pendente) —</option>${Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === i.produtoId ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select>
-                <small class="muted">lido: ${esc(i.desc)}</small>${chipConf(i.conf)}</td>
+            ${p.itens.length ? p.itens.map((i, n) => { const key = k + ':' + n, g = grupoDe(key), gi = grupos.indexOf(g); return g ? `<tr data-n="${n}" class="ab-linha" style="--ab:${AB_CORES[gi % AB_CORES.length]}">
+              <td><span class="ab-tag">Abertura ${gi + 1}</span> <b>${esc(produto(g.produtoId)?.nome || '')}</b> <button type="button" class="link" data-ab-tirar="${key}">tirar do grupo</button>
+                <small class="muted">${i.nShow ? `item nº ${esc(i.nShow)} do show · ` : ''}lido: ${esc(i.desc)}</small></td>
               <td><input data-qtd inputmode="decimal" value="${esc(qtdFmt(i.qtd))}"></td>
               <td><input data-val inputmode="decimal" value="${dec(i.valor)}"></td>
-              <td class="r strong">${brl(i.qtd * i.valor)}</td></tr>`).join('') : '<tr><td colspan="4" class="muted">Nenhum item lido nesta etiqueta — esta venda não será lançada.</td></tr>'}
+              <td class="r strong">${brl(i.qtd * i.valor)}</td></tr>` : `<tr data-n="${n}">
+              <td><label class="ab-chk" title="Marcar: veio de um produto aberto"><input type="checkbox" data-absel="${key}" ${selec.has(key) ? 'checked' : ''}></label><select data-prod><option value="">— sem cadastro (venda fica pendente) —</option>${Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome)).map(x => `<option value="${x.id}" ${x.id === i.produtoId ? 'selected' : ''}>${esc(x.nome)}</option>`).join('')}</select>
+                <small class="muted">${i.nShow ? `<b>item nº ${esc(i.nShow)} do show</b> · ` : ''}lido: ${esc(i.desc)}</small>${chipConf(i.conf)}</td>
+              <td><input data-qtd inputmode="decimal" value="${esc(qtdFmt(i.qtd))}"></td>
+              <td><input data-val inputmode="decimal" value="${dec(i.valor)}"></td>
+              <td class="r strong">${brl(i.qtd * i.valor)}</td></tr>`; }).join('') : '<tr><td colspan="4" class="muted">Nenhum item lido nesta etiqueta — esta venda não será lançada.</td></tr>'}
             </tbody></table>
             <details><summary>ver texto lido do PDF (páginas ${p.paginas.join(', ')})</summary><pre>${esc(p.texto.join('\n\n'))}</pre></details>
           </div>`).join('') + `<div class="imp-tot" id="impTot"></div>`;
-        total();
+        pintarGrupos(); total();
       }
       function total() {
         const sel = pedidos.filter(p => p.incluir && p.itens.length);
         const t = sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0);
-        const pend = sel.filter(p => p.itens.some(i => i.conf !== 'ok')).length;
+        const pend = sel.filter(p => p.itens.some((i, n) => !grupoDe(pedidos.indexOf(p) + ':' + n) && i.conf !== 'ok')).length;
+        if ($('#abBox', body)) $$('.ab-grupo', body).forEach(el => { const g = grupos.find(x => x.id === el.dataset.g); if (!g) return; const r = resumoGrupo(g); const sp = $$('.ab-num b', el); if (sp[0]) { sp[0].textContent = brl(r.vend); sp[1].textContent = brl(r.custo); sp[2].textContent = brl(r.lucro); sp[2].className = r.lucro < 0 ? 'neg' : 'pos'; } });
         const el = $('#impTot', body); if (el) el.innerHTML = `${sel.length} venda(s) selecionada(s) · <span class="pos">${sel.length - pend} confirmada(s)</span> · <span class="${pend ? 'neg' : ''}">${pend} pendente(s)</span> · total <b>${brl(t)}</b>`;
       }
       res.addEventListener('input', e => {
@@ -3495,13 +3562,34 @@ function abrirImportarEtiquetas() {
         const card = e.target.closest('.imp-ped'); if (!card) return;
         const p = pedidos[+card.dataset.k];
         if (e.target.matches('[data-inc]')) { p.incluir = e.target.checked; card.classList.toggle('off', !p.incluir); total(); }
+        if (e.target.matches('[data-absel]')) { const key = e.target.dataset.absel; if (e.target.checked) selec.add(key); else selec.delete(key); pintarGrupos(); }
         if (e.target.matches('[data-prod]')) {
           const tr = e.target.closest('tr'), i = p.itens[+tr.dataset.n];
           i.produtoId = e.target.value; i.conf = e.target.value ? 'ok' : 'sem';
           $('.conf', tr).outerHTML = chipConf(i.conf); total();
         }
       });
+      // grupos de abertura (barra, formulário e resumo ficam fora dos cartões das vendas)
+      res.addEventListener('change', e => {
+        const gEl = e.target.closest('.ab-grupo'); if (!gEl) return;
+        const g = grupos.find(x => x.id === gEl.dataset.g); if (!g) return;
+        if (e.target.matches('[data-gq]')) { const q = num(e.target.value); if (q > 0) g.qtd = q; else e.target.value = qtdFmt(g.qtd); total(); }
+        if (e.target.matches('[data-gdiv]')) g.div = e.target.value;
+      });
       res.addEventListener('click', e => {
+        if (e.target.closest('[data-ab-novo]')) { abForm = true; pintarGrupos(); return; }
+        if (e.target.closest('[data-ab-cancel]')) { abForm = false; pintarGrupos(); return; }
+        if (e.target.closest('[data-ab-criar]')) {
+          const f = e.target.closest('.ab-form'), pid = $('[data-ab-prod]', f).value, q = num($('[data-ab-qtd]', f).value);
+          if (!pid) return toast('Escolha o produto que foi aberto', 'err');
+          if (!(q > 0)) return toast('Informe quantas unidades foram abertas', 'err');
+          grupos.push({ id: 'ab-' + uid(), produtoId: pid, qtd: q, div: $('[data-ab-div]', f).value, lembrar: !!$('[data-ab-lembrar]', f)?.checked, linhas: [...selec] });
+          selec = new Set(); abForm = false; repintar(); return;
+        }
+        const tir = e.target.closest('[data-ab-tirar]');
+        if (tir) { const key = tir.dataset.abTirar, g = grupoDe(key); if (g) { g.linhas = g.linhas.filter(x => x !== key); if (!g.linhas.length) grupos = grupos.filter(x => x !== g); } repintar(); return; }
+        const des = e.target.closest('[data-gdes]');
+        if (des) { const id = des.closest('.ab-grupo').dataset.g; grupos = grupos.filter(x => x.id !== id); repintar(); return; }
         const b = e.target.closest('[data-okconf]'); if (!b) return;
         const tr = b.closest('tr'), p = pedidos[+b.closest('.imp-ped').dataset.k], i = p.itens[+tr.dataset.n];
         i.conf = 'ok'; $('.conf', tr).outerHTML = chipConf('ok'); total();
@@ -3512,6 +3600,23 @@ function abrirImportarEtiquetas() {
       if (!sel.length) { toast(pedidos.length ? 'Selecione pelo menos uma venda' : 'Escolha o PDF das etiquetas', 'err'); return false; }
       const semCli = sel.find(p => !String(p.cliente || '').trim());
       if (semCli) { toast('Informe o nome do cliente de todas as vendas selecionadas', 'err'); return false; }
+      // aberturas: fração de 1 unidade (ou mais) do produto aberto para cada linha
+      pedidos.forEach(p => p.itens.forEach(i => { delete i._ab; }));
+      const regrasNovas = [];
+      for (const g of grupos) {
+        const ls = linhasValidas(g); if (!ls.length) continue;
+        if (!produto(g.produtoId)) { toast('Escolha o produto de todas as aberturas', 'err'); return false; }
+        const vals = ls.map(key => { const i = itemDe(key); return num(i.qtd) * num(i.valor); }), T = vals.reduce((a, b) => a + b, 0);
+        let acum = 0;
+        ls.forEach((key, x) => {
+          const i = itemDe(key);
+          let f = Math.round(((g.div === 'igual' || !T) ? 1 / ls.length : vals[x] / T) * num(g.qtd) * 1e6) / 1e6;
+          if (x === ls.length - 1) f = Math.round((num(g.qtd) - acum) * 1e6) / 1e6;
+          acum += f;
+          i._ab = { id: g.id, produtoId: g.produtoId, fracao: f, orig: i.conf === 'ok' ? (i.produtoId || '') : '' };
+        });
+        if (g.lembrar) regrasNovas.push([g.produtoId, itemDe(ls[0]).desc]);
+      }
       const data = $('#impData').value || hoje(), forma = $('#impForma').value, dias = JAMBLE_DIAS;
       const canal = 'Jamble';
       const ops = [];
@@ -3541,19 +3646,21 @@ function abrirImportarEtiquetas() {
         p.clienteId = c.id;
       }
       // nomes confirmados na conferência passam a ser reconhecidos nas próximas importações
-      for (const p of sel) for (const i of p.itens) if (i.conf === 'ok' && i.produtoId) {
+      for (const [pid, d] of regrasNovas) { const np = comRegraAbertura(produto(pid), d); if (np) { ops.push(up('produtos', np)); Store.apply([up('produtos', np)]); } }
+      for (const p of sel) for (const i of p.itens) if (!i._ab && i.conf === 'ok' && i.produtoId) {
         const np = comApelido(produto(i.produtoId), i.desc); if (np) { ops.push(up('produtos', np)); Store.apply([up('produtos', np)]); }
       }
       let numero = proxNumero(Store.data.vendas);
       let nPend = 0;
       for (const p of sel) {
         const total = r2(p.itens.reduce((s, i) => s + i.qtd * i.valor, 0));
-        const pendente = p.itens.some(i => i.conf !== 'ok' || !i.produtoId);
+        const pendente = p.itens.some(i => !i._ab && (i.conf !== 'ok' || !i.produtoId));
         if (pendente) nPend++;
         const pl = plataformaPorNome(canal), pct = num(pl?.comissao);
         const rec = {
           id: uid(), numero: String(numero++), data, clienteId: p.clienteId, canal, status: pendente ? 'Pendente' : 'Atendido',
-          itens: p.itens.map(i => ({ produtoId: i.conf === 'sem' ? '' : (i.produtoId || ''), descricao: i.desc, qtd: i.qtd, valor: i.valor, conf: i.produtoId ? i.conf : 'sem' })),
+          itens: p.itens.map(i => i._ab ? { produtoId: i._ab.produtoId, descricao: i.desc, qtd: i.qtd, valor: i.valor, conf: 'ok', abertura: i._ab.id, fracao: i._ab.fracao, produtoOrig: i._ab.orig }
+            : { produtoId: i.conf === 'sem' ? '' : (i.produtoId || ''), descricao: i.desc, qtd: i.qtd, valor: i.valor, conf: i.produtoId ? i.conf : 'sem' }),
           frete: 0, desconto: 0, total, formaPgto: forma, parcelas: 1, vencimento: addDias(data, dias),
           obs: ['Importado do PDF da Jamble', p.pedido && p.pedido, p.rastreio && 'Rastreio ' + p.rastreio, p.chave && 'DCe ' + p.chave].filter(Boolean).join(' · '),
           criadoEm: agora(),
@@ -3564,7 +3671,8 @@ function abrirImportarEtiquetas() {
       }
       Store.commit(ops);
       $('#modal').classList.remove('pdv-modal');
-      toast(`${sel.length} venda(s) lançada(s)${nPend ? ` · ${nPend} pendente(s) de confirmação` : ''} — ${brl(sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0))}`, 'ok');
+      const nAb = grupos.filter(g => linhasValidas(g).length).length;
+      toast(`${sel.length} venda(s) lançada(s)${nPend ? ` · ${nPend} pendente(s) de confirmação` : ''}${nAb ? ` · ${nAb} produto(s) aberto(s)` : ''} — ${brl(sel.reduce((s, p) => s + p.itens.reduce((a, i) => a + i.qtd * i.valor, 0), 0))}`, 'ok');
     },
   });
 }
@@ -3573,6 +3681,107 @@ function abrirImportarEtiquetas() {
 /* =========================================================
    CONFIRMAR VENDA PENDENTE (produtos da etiqueta)
    ========================================================= */
+/* =========================================================
+   v27.4: PRODUTO ABERTO — vendas já lançadas que vieram de 1 produto aberto
+   ========================================================= */
+function aberturasExistentes() {
+  const g = {};
+  for (const v of Store.data.vendas) (v.itens || []).forEach((i, n) => { if (!i.abertura) return; const a = g[i.abertura] = g[i.abertura] || { id: i.abertura, produtoId: i.produtoId, qtd: 0, vend: 0, linhas: [], data: v.data }; a.qtd += num(i.fracao); a.vend += num(i.qtd) * num(i.valor); a.linhas.push({ v, n }); if ((v.data || '') < a.data) a.data = v.data; });
+  return Object.values(g).sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+}
+function abrirAberturaVendas(dataIni) {
+  let data = dataIni || hoje(), q = '';
+  const selec = new Set();
+  const prods = Store.data.produtos.filter(x => x.ativo !== 'nao').sort((a, b) => a.nome.localeCompare(b.nome));
+  const linhas = () => {
+    const out = [];
+    for (const v of Store.data.vendas) {
+      if (!['Atendido', 'Pendente'].includes(v.status) || ehInterna(v) || (data && v.data !== data)) continue;
+      const cli = contato(v.clienteId);
+      (v.itens || []).forEach((i, n) => { if (i.abertura) return; const txt = `${itemNome(i)} ${i.descricao || ''} ${cli?.nome || ''} ${cli?.nick || ''} ${v.numero}`; if (q && !match(q, txt)) return; out.push({ v, n, i, cli, key: v.id + ':' + n }); });
+    }
+    return out.sort((a, b) => num(a.v.numero) - num(b.v.numero)).slice(0, 300);
+  };
+  $('#modal').classList.add('pdv-modal');
+  Modal.open({
+    title: 'Produto aberto — vendas já lançadas', submit: 'Criar abertura com as linhas marcadas',
+    body: `<div class="note">Use quando um produto (ex.: <b>Box Fichário</b>) foi aberto e vendido em partes, para clientes diferentes e com valores diferentes. Marque as linhas que vieram dele: o sistema baixa <b>1 unidade do produto aberto</b> (e não das avulsas) e divide o custo dele entre essas vendas. Cliente, valor e contas a receber não mudam.</div>
+      <div class="grid g4" style="margin:12px 0 6px">
+        ${field('Data das vendas', `<input type="date" id="abData" value="${esc(data)}">`)}
+        <label class="f span3">Buscar<input id="abQ" placeholder="cliente, @nick, nº da venda ou nome do anúncio…" autocomplete="off"></label>
+      </div>
+      <div id="abLista"></div>
+      <div class="ab-form" style="margin-top:12px">
+        <label class="f" style="flex:2">Produto que foi aberto<select id="abProd"><option value="">— escolher —</option>${prods.map(x => `<option value="${x.id}">${esc(x.nome)}${num(x.custo) ? ' · custo ' + brl(x.custo) : ''}</option>`).join('')}</select></label>
+        <label class="f" style="width:110px">Unidades abertas<input id="abQtd" inputmode="decimal" value="1"></label>
+        <label class="f" style="flex:1">Divisão do custo<select id="abDiv"><option value="prop">Proporcional ao valor de cada venda</option><option value="igual">Partes iguais</option></select></label>
+      </div>
+      <div id="abResumo" class="muted" style="font-weight:800;font-size:13px;margin-top:8px"></div>
+      <div class="section-t">Aberturas já registradas</div><div id="abExist"></div>`,
+    onOpen: body => {
+      const pintar = () => {
+        const ls = linhas();
+        $('#abLista', body).innerHTML = `<div class="table-wrap" style="box-shadow:none;border:1.5px solid var(--line);max-height:340px;overflow:auto"><table>
+          <thead><tr><th></th><th>Venda</th><th>Cliente</th><th>Produto / anúncio</th><th class="r">Valor</th></tr></thead><tbody>
+          ${ls.length ? ls.map(x => `<tr><td><input type="checkbox" data-k="${esc(x.key)}" ${selec.has(x.key) ? 'checked' : ''}></td><td>nº ${esc(x.v.numero)}${x.v.status === 'Pendente' ? ' <span class="badge amber">pendente</span>' : ''}</td>
+            <td class="wrap">${esc(x.cli?.nome || '—')}${x.cli?.nick ? `<br><small class="muted">@${esc(x.cli.nick)}</small>` : ''}</td>
+            <td class="wrap">${esc(x.i.produtoId ? itemNome(x.i) : '(sem produto)')}${x.i.descricao && x.i.descricao !== itemNome(x.i) ? `<br><small class="muted">anúncio: ${esc(x.i.descricao)}</small>` : ''}</td>
+            <td class="r strong">${brl(num(x.i.qtd) * num(x.i.valor))}</td></tr>`).join('') : emptyRow(5, 'Nenhuma venda nesta data', '🧾')}</tbody></table></div>`;
+        resumo();
+        const ex = aberturasExistentes();
+        $('#abExist', body).innerHTML = ex.length ? ex.map(a => `<div class="ab-grupo" style="--ab:#7B4BC4"><div class="ab-tit"><b>${esc(nomeProduto(a.produtoId))}</b><small class="muted">${dataBR(a.data)} · ${a.linhas.length} venda(s): ${a.linhas.map(l => 'nº ' + esc(l.v.numero)).join(', ')}</small></div>
+            <div class="ab-num"><span>${qtdFmt(r2(a.qtd))} un. aberta(s)</span><span>vendido <b>${brl(a.vend)}</b></span><span>custo <b>${brl(Store.data.movimentos.filter(m => a.linhas.some(l => l.v.id === m.origemId) && m.produtoId === a.produtoId && /produto aberto/.test(m.obs || '')).reduce((t, m) => t + num(m.quantidade) * num(m.custoUnit), 0))}</b></span></div>
+            <div class="ab-ops"><button type="button" class="btn ghost sm" data-undo="${esc(a.id)}">Desfazer</button></div></div>`).join('') : '<p class="muted" style="font-weight:700">Nenhuma ainda.</p>';
+      };
+      const resumo = () => {
+        const ls = linhas().filter(x => selec.has(x.key)), vend = ls.reduce((t, x) => t + num(x.i.qtd) * num(x.i.valor), 0);
+        const pr = produto($('#abProd', body).value), custo = num(pr?.custo) * num($('#abQtd', body).value);
+        $('#abResumo', body).innerHTML = selec.size ? `${selec.size} linha(s) marcada(s) · vendido <b>${brl(vend)}</b>${pr ? ` · custo <b>${brl(custo)}</b> · lucro <b class="${vend - custo < 0 ? 'neg' : 'pos'}">${brl(vend - custo)}</b>` : ' · escolha o produto aberto'}` : 'Marque as linhas que vieram do produto aberto.';
+      };
+      $('#abData', body).onchange = e => { data = e.target.value; pintar(); };
+      $('#abQ', body).oninput = e => { q = e.target.value; pintar(); };
+      ['#abProd', '#abQtd'].forEach(id => $(id, body).addEventListener('input', resumo));
+      $('#abProd', body).addEventListener('change', resumo);
+      body.addEventListener('change', e => { const k = e.target.dataset?.k; if (k === undefined || !e.target.matches('input[type=checkbox]')) return; if (e.target.checked) selec.add(k); else selec.delete(k); resumo(); });
+      body.addEventListener('click', e => {
+        const u = e.target.closest('[data-undo]'); if (!u) return;
+        const a = aberturasExistentes().find(x => x.id === u.dataset.undo); if (!a) return;
+        const ops = [];
+        for (const v of [...new Set(a.linhas.map(l => l.v))]) {
+          const temPago = Store.data.receber.some(r => r.origem === 'venda' && r.origemId === v.id && r.status === 'Pago');
+          const itens = v.itens.map(i => { if (i.abertura !== a.id) return i; const { abertura, fracao, produtoOrig, ...rest } = i; return { ...rest, produtoId: produtoOrig || '', conf: produtoOrig ? 'ok' : 'sem' }; });
+          const falta = itens.some(i => !i.produtoId);
+          if (falta && temPago) return toast(`A venda nº ${v.numero} já foi recebida e a linha não tinha produto antes: escolha o produto dela pela tela de vendas.`, 'err');
+          const nv = { ...v, itens, status: falta ? 'Pendente' : v.status };
+          ops.push(up('vendas', nv), ...efeitosVenda(nv));
+        }
+        Store.commit(ops).then(() => { toast('Abertura desfeita', 'ok'); pintar(); });
+      });
+      pintar();
+    },
+    onSubmit: (fd, body) => {
+      const pid = $('#abProd', body).value, qtdA = num($('#abQtd', body).value), div = $('#abDiv', body).value;
+      const ls = linhas().filter(x => selec.has(x.key));
+      if (!ls.length) { toast('Marque as linhas que vieram do produto aberto', 'err'); return false; }
+      if (!produto(pid)) { toast('Escolha o produto que foi aberto', 'err'); return false; }
+      if (!(qtdA > 0)) { toast('Informe quantas unidades foram abertas', 'err'); return false; }
+      const id = 'ab-' + uid(), vals = ls.map(x => num(x.i.qtd) * num(x.i.valor)), T = vals.reduce((a, b) => a + b, 0);
+      let acum = 0; const fr = {};
+      ls.forEach((x, k) => { let f = Math.round(((div === 'igual' || !T) ? 1 / ls.length : vals[k] / T) * qtdA * 1e6) / 1e6; if (k === ls.length - 1) f = Math.round((qtdA - acum) * 1e6) / 1e6; acum += f; fr[x.key] = f; });
+      const ops = [];
+      for (const v of [...new Set(ls.map(x => x.v))]) {
+        const itens = v.itens.map((i, n) => { const key = v.id + ':' + n; if (!(key in fr)) return i; return { ...i, produtoId: pid, conf: 'ok', abertura: id, fracao: fr[key], produtoOrig: i.produtoId && i.conf !== 'sem' ? i.produtoId : '' }; });
+        const pronto = itens.every(i => i.produtoId && (i.conf === 'ok' || !i.conf));
+        const nv = { ...v, itens, status: v.status === 'Pendente' && pronto ? 'Atendido' : v.status };
+        ops.push(up('vendas', nv), ...efeitosVenda(nv));
+      }
+      Store.commit(ops);
+      $('#modal').classList.remove('pdv-modal');
+      toast(`Abertura registrada: ${qtdFmt(qtdA)} × ${produto(pid).nome} em ${ls.length} venda(s)`, 'ok');
+    },
+  });
+}
+
 function formConfirmarVenda(v) {
   const itens = v.itens.map(i => ({ ...i }));
   const cli = contato(v.clienteId);
@@ -3591,7 +3800,10 @@ function formConfirmarVenda(v) {
       </div>
       <div class="items"><table>
         <thead><tr><th>Nome na etiqueta</th><th>Produto no cadastro</th><th class="r">Qtd</th><th class="r">Valor unit.</th></tr></thead>
-        <tbody id="cfItens">${itens.map((i, k) => `<tr data-k="${k}">
+        <tbody id="cfItens">${itens.map((i, k) => i.abertura ? `<tr data-k="${k}" data-ab="1">
+          <td class="wrap"><b>${esc(i.descricao || '')}</b><br><span class="conf ok">🔓 parte de produto aberto</span></td>
+          <td class="wrap"><b>${esc(nomeProduto(i.produtoId))}</b><br><small class="muted">${fmtPct(num(i.fracao) * 100)}% de 1 unidade · desfaça em Vendas › Produto aberto</small></td>
+          <td class="r">${qtdFmt(i.qtd)}</td><td class="r">${brl(i.valor)}</td></tr>` : `<tr data-k="${k}">
           <td class="wrap"><b>${esc(i.descricao || itemNome(i))}</b><br>${chipConf(i.conf === 'ok' && i.produtoId ? 'ok' : (i.produtoId ? 'sug' : 'sem')).replace(/<button[^>]*>.*?<\/button>/, '').replace(' · ', '')}</td>
           <td class="wrap cf-prod"><select data-cf>${opcoes(i.produtoId)}</select>
             <label class="check cf-lembrar"><input type="checkbox" data-lembrar checked><span>reconhecer este nome nas próximas importações</span></label></td>
@@ -3599,7 +3811,7 @@ function formConfirmarVenda(v) {
       </table></div>
       <p class="muted" style="font-size:12.5px;font-weight:700;margin:10px 0 0">“Cadastrar como produto novo” cria o produto com o nome da etiqueta e o preço vendido (custo zerado — ajuste depois em Produtos).</p>`,
     onSubmit: (fd, body) => {
-      const linhas = $$('#cfItens tr', body).map(tr => ({ k: +tr.dataset.k, sel: $('[data-cf]', tr).value, lembrar: $('[data-lembrar]', tr).checked }));
+      const linhas = $$('#cfItens tr:not([data-ab])', body).map(tr => ({ k: +tr.dataset.k, sel: $('[data-cf]', tr).value, lembrar: $('[data-lembrar]', tr).checked }));
       const falta = linhas.find(l => !l.sel);
       if (falta) { toast(`Escolha o produto de “${itens[falta.k].descricao}”`, 'err'); return false; }
       const ops = [], novos = {};
@@ -3920,11 +4132,11 @@ function dadosDashboard(mes) {
     let cmvV = 0;
     for (const it of v.itens) {
       const q = num(it.qtd), rec = q * num(it.valor) * fator, cm = custoMov[v.id + '|' + it.produtoId];
-      const cu = cm && cm.q ? cm.v / cm.q : num(produto(it.produtoId)?.custo), custo = q * cu;
+      const cu = cm && cm.q ? cm.v / cm.q : num(produto(it.produtoId)?.custo), custo = qtdEstoqueItem(it) * cu;
       cmvV += custo;
       const k = it.produtoId || 'sem:' + (it.descricao || '');
       const pr = prods[k] = prods[k] || { id: it.produtoId, nome: itemNome(it), q: 0, fat: 0, custo: 0, sc: semCusto(produto(it.produtoId)) };
-      pr.q += q; pr.fat += rec; pr.custo += custo;
+      pr.q += qtdEstoqueItem(it); pr.fat += rec; pr.custo += custo;
       if (pr.sc) fatSemCusto += rec;
       if (produto(it.produtoId)?.consigId) { const c = calcRepasse(v, it); consig.fat += rec; consig.repasse += c ? c.repasse : custo; consig.comissao += c ? c.comissaoV : 0; consig.n += q; }
     }

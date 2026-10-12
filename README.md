@@ -152,6 +152,15 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.4
+- **Produto aberto** (ex.: Box Fichário vendido em 5 partes para clientes e valores diferentes):
+  - Na importação das etiquetas: marque as linhas (caixinha ao lado do produto) › **Veio de produto aberto** › escolha o produto, unidades abertas e divisão (proporcional ao valor ou partes iguais). Cada produto aberto vira um grupo (Abertura 1, 2…), com resumo de vendido, custo e lucro.
+  - Baixa só a fração do produto aberto em cada venda (soma = unidades abertas) e o custo fica dividido entre as vendas. Cliente, valor e contas a receber não mudam.
+  - Regra pelo nome do anúncio ("lembrar"): nas próximas importações as linhas já entram agrupadas; "#1", "#2" no fim do nome separam unidades.
+  - Vendas já lançadas: Vendas › **🔓 Produto aberto** (criar e desfazer aberturas).
+  - Itens numerados do show (Venda nº X) não são mais somados numa linha só na importação.
+- Só front-end (Code.gs não muda).
+
 ## v27.3
 - Compra de insumos: lista de sugestões ao digitar a descrição (insumos cadastrados + já usados), preenche unidade e último custo.
 - Clientes consignantes: botão **Saldo** e aba **Saldo** no cadastro — vendas líquidas por data, com o cálculo (bruto − taxa − imposto − comissão) ao passar o mouse e o detalhe de cada venda.
