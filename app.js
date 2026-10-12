@@ -24,7 +24,7 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27.4';
+const APP_VERSAO = '27.4.1';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
 const APP_DATA_VERSAO = '11/10/2026';
 const LS_DATA = 'cheel_erp_data_v1';
@@ -3341,11 +3341,11 @@ function analisarJamble(paginas) {
   let cur = null;
   paginas.forEach((pg, idx) => {
     const ls = pg.map(limpa).filter(Boolean);
-    const hi = ls.findIndex(l => /^@\S+\s+#\d+/.test(l));
+    const hi = ls.findIndex(l => /^@\S.*?\s#\d+(\s|$)/.test(l));   // v27.4.1: nick da Jamble pode ter espaço (ex.: "@celso henrique #3")
     if (hi >= 0) {
-      const m = ls[hi].match(/^@(\S+)\s+#(\d+)/);
+      const m = ls[hi].match(/^@(\S.*?)\s+#(\d+)(?:\s|$)/);
       const n = m[2];
-      if (!peds[n]) { peds[n] = { num: n, handle: m[1], cliente: limpa((ls[hi + 1] || '').split('|')[0]), lotes: [], paginas: [], texto: [] }; ordem.push(n); }
+      if (!peds[n]) { peds[n] = { num: n, handle: m[1].trim(), cliente: limpa((ls[hi + 1] || '').split('|')[0]), lotes: [], paginas: [], texto: [] }; ordem.push(n); }
       cur = peds[n];
       let lote = null;
       for (let k = hi + 2; k < ls.length; k++) {

@@ -152,6 +152,9 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.4.1
+- Importação Jamble: lê comprador com nick com espaço (ex.: "@celso henrique #3"). Antes essa venda era ignorada e o endereço/CPF dela ia para o comprador anterior.
+
 ## v27.4
 - **Produto aberto** (ex.: Box Fichário vendido em 5 partes para clientes e valores diferentes):
   - Na importação das etiquetas: marque as linhas (caixinha ao lado do produto) › **Veio de produto aberto** › escolha o produto, unidades abertas e divisão (proporcional ao valor ou partes iguais). Cada produto aberto vira um grupo (Abertura 1, 2…), com resumo de vendido, custo e lucro.
