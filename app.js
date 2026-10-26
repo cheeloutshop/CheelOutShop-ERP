@@ -24,9 +24,9 @@ const COLS = {
   receber:    ['id', 'descricao', 'contatoId', 'categoria', 'vencimento', 'valor', 'status', 'pagoEm', 'valorPago', 'origem', 'origemId', 'obs', 'criadoEm'],
 };
 
-const APP_VERSAO = '27.4.1';
+const APP_VERSAO = '27.4.3';
 const JAMBLE_DIAS = 20;   // prazo médio fixo de repasse da Jamble
-const APP_DATA_VERSAO = '11/10/2026';
+const APP_DATA_VERSAO = '26/10/2026';
 const LS_DATA = 'cheel_erp_data_v1';
 const LS_CFG = 'cheel_erp_cfg_v1';
 const LS_QUEUE = 'cheel_erp_queue_v1';
@@ -2583,13 +2583,21 @@ function formConta(tipo, c) {
       </div>` : ''}
       ${field('<span id="ctValLbl">Valor (R$) *</span>', inp('valor', dec(c.valor), 'inputmode="decimal" required placeholder="0,00" id="ctVal"'))}
       ${field('<span id="ctVencLbl">Vencimento *</span>', inp('vencimento', c.vencimento, 'type="date" required id="ctVenc"'))}
+      ${!novo && c.status === 'Pago' ? `${field(R ? 'Valor recebido (R$) *' : 'Valor pago (R$) *', inp('valorPago', dec(c.valorPago || c.valor), 'inputmode="decimal" required id="ctPago"'))}
+        ${field(R ? 'Recebido em' : 'Pago em', inp('pagoEm', c.pagoEm || c.vencimento, 'type="date" required'))}
+        <div class="note span2">Esta conta já está ${R ? 'recebida' : 'paga'}. O <b>${R ? 'valor recebido' : 'valor pago'}</b> é o que entra no saldo em conta, no resultado do mês e na posição da loja.</div>` : ''}
       ${novo ? `<div id="ctRep">${field('Repetir (nº de meses)', inp('repetir', 1, 'type="number" min="1" max="60"'))}</div>` : ''}
       ${novo ? `<div id="ctJa">${field('Já está ' + (R ? 'recebida' : 'paga') + '?', `<select name="jaPago">${opt([['nao', 'Não'], ['sim', 'Sim, hoje']], 'nao')}</select>`)}</div>` : ''}
       ${field('Observações', `<textarea name="obs">${esc(c.obs)}</textarea>`, 'span2')}
       ${novo ? '<div class="note span2" id="ctPrev" hidden></div>' : ''}
     </div>`,
     onOpen: body => {
-      if (!novo) return;
+      if (!novo) {
+        // conta paga: se o valor pago era igual ao valor, acompanha a correção do valor
+        const v = $('#ctVal', body), pg = $('#ctPago', body);
+        if (v && pg) { let antes = num(v.value); v.addEventListener('input', () => { if (Math.abs(num(pg.value) - antes) < 0.005) pg.value = v.value; antes = num(v.value); }); }
+        return;
+      }
       const upd = () => {
         const parc = $('#ctTipo').value === 'parcelada';
         $('#ctParc', body).hidden = !parc; $('#ctRep', body).hidden = parc; $('#ctJa', body).hidden = parc; $('#ctPrev', body).hidden = !parc;
@@ -2609,7 +2617,14 @@ function formConta(tipo, c) {
       const valor = r2(fd.valor);
       if (valor <= 0) { toast('Informe um valor maior que zero', 'err'); return false; }
       const base = { ...c, descricao: fd.descricao.trim(), contatoId: fd.contatoId, categoria: fd.categoria.trim(), valor, vencimento: fd.vencimento, obs: fd.obs };
-      if (!novo) { Store.commit([up(tipo, base)]); toast('Conta atualizada', 'ok'); return; }
+      if (!novo) {
+        if (c.status === 'Pago') {
+          const vp = r2(fd.valorPago);
+          if (!(vp > 0)) { toast('Informe o ' + (R ? 'valor recebido' : 'valor pago'), 'err'); return false; }
+          base.valorPago = vp; base.pagoEm = fd.pagoEm || c.pagoEm;
+        }
+        Store.commit([up(tipo, base)]); toast('Conta atualizada', 'ok'); return;
+      }
       if (fd.tipoLanc === 'parcelada') {
         const tot = Math.floor(num(fd.parcTotal)), prox = Math.floor(num(fd.parcProx)) || 1;
         if (!(tot > 1)) { toast('Informe o total de parcelas (2 ou mais)', 'err'); return false; }
@@ -4449,6 +4464,8 @@ function migracaoV19() {
   let sc = ''; try { sc = localStorage.getItem('cheel_erp_semcusto') || ''; } catch (e) {}
   if (!sc) { Store.data.produtos.filter(p => /avuls/.test(norm(p.nome)) && !num(p.custo) && !p.consigId && !semCusto(p)).forEach(p => add(up('produtos', { ...p, semCusto: 'sim' }))); try { localStorage.setItem('cheel_erp_semcusto', '1'); } catch (e) {} }
   // v22.2: acerta custos lançados antes do custo médio (1x por aparelho; o cálculo é o mesmo em qualquer aparelho)
+  // v27.4.2: conta "CORREIOS DIEGO GONCALVES" corrigida para 43,40 ficou com valor pago 4.340 (a edição não atualizava o valor pago)
+  { const c = Store.data.pagar.find(r => r.id === 'mv9ixfzsz482r8'); if (c && c.status === 'Pago' && num(c.valorPago) === 4340 && num(c.valor) < 4340) add(up('pagar', { ...c, valorPago: num(c.valor) })); }
   // v27.3: junta os repasses de consignado (antes 1 conta por produto) em 1 conta por dono + dia (1x por aparelho)
   let lt = ''; try { lt = localStorage.getItem('cheel_erp_lotes273') || ''; } catch (e) {}
   if (lt !== '1') {
@@ -4628,7 +4645,7 @@ function viewConfig(el) {
         <div id="bkDrive" class="note">Consultando backups no Google Drive…</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
           <button class="btn primary" id="bkAgora">${ICON.sync}Fazer backup agora</button>
-          <a class="btn ghost" id="bkPasta" href="https://drive.google.com/drive/search?q=Cheel%20Out%20Shop%20%E2%80%94%20Backups%20do%20ERP" target="_blank" rel="noopener">Abrir pasta no Google Drive</a>
+          <a class="btn ghost" id="bkPasta" href="https://drive.google.com/drive/search?q=Cheel%20Out%20Shop%20%E2%80%94%20Backups%20do%20ERP" target="_blank" rel="noopener">Abrir pasta no Google Drive</a><a class="btn ghost" href="#/avancado" title="Importar ou restaurar um backup">Importar / restaurar backup</a>
         </div>` : `
         <div class="note warn">O sistema está em <b>modo local</b>: os dados ficam só neste navegador. Enquanto a planilha do Google não estiver conectada, o backup automático é guardado apenas aqui.</div>`}
       <div class="section-t">Cópias guardadas neste aparelho (2 últimas)</div>
@@ -4756,12 +4773,26 @@ function viewConfigAvancado(el) {
       try {
         const d = JSON.parse(rd.result);
         if (!d || !Array.isArray(d.produtos)) throw new Error('Arquivo não parece um backup do ERP');
-        confirmar('Importar este backup? Os registros serão adicionados/atualizados (por ID).', async () => {
-          const ops = [];
-          for (const k of Object.keys(COLS)) (d[k] || []).forEach(r => r.id && ops.push(up(k, Store.normalize(k, r))));
-          await Store.commit(ops);
-          toast(`${ops.length} registros importados`, 'ok');
-        }, 'Importar');
+        const nB = Object.keys(COLS).reduce((t, k) => t + (d[k] || []).length, 0), nA = Object.keys(COLS).reduce((t, k) => t + Store.data[k].length, 0);
+        Modal.open({
+          title: 'Importar backup', small: true, submit: 'Importar',
+          body: `<p style="margin:0 0 10px;font-weight:700">Arquivo <b>${esc(f.name)}</b> · ${nB} registros (o sistema tem ${nA} hoje).</p>
+            <label class="check" style="align-items:flex-start;margin-bottom:10px"><input type="radio" name="modo" value="mesclar" checked><span><b>Mesclar</b> — adiciona/atualiza os registros do arquivo e mantém o que não está nele.</span></label>
+            <label class="check" style="align-items:flex-start"><input type="radio" name="modo" value="restaurar"><span><b>Restaurar exatamente este backup</b> — o sistema e a planilha ficam iguais ao arquivo. <span class="neg">Tudo o que foi lançado ou alterado depois dele é apagado.</span></span></label>
+            <div class="note warn" style="margin-top:12px">Antes de importar, o sistema baixa uma cópia de segurança do estado atual.</div>`,
+          onSubmit: async fd => {
+            const modo = fd.modo || 'mesclar';
+            try { baixar(`cheeloutshop-antes-da-importacao-${hoje()}.json`, JSON.stringify(Store.data, null, 2), 'application/json'); } catch (e2) {}
+            const ops = [];
+            for (const k of Object.keys(COLS)) {
+              const lista = (d[k] || []).filter(r => r && r.id);
+              if (modo === 'restaurar') { const ids = new Set(lista.map(r => String(r.id))); Store.data[k].filter(r => !ids.has(String(r.id))).forEach(r => ops.push(del(k, r.id))); }
+              lista.forEach(r => ops.push(up(k, Store.normalize(k, r))));
+            }
+            await Store.commit(ops);
+            toast(modo === 'restaurar' ? `Backup restaurado — ${nB} registros` : `${ops.length} registros importados`, 'ok');
+          },
+        });
       } catch (err) { toast('Erro: ' + err.message, 'err'); }
     };
     rd.readAsText(f);

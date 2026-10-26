@@ -152,6 +152,13 @@ As configurações avançadas (conexão, troca de senha, importar/exportar, dado
 - **Saldo em carteira** dos consignantes = repasses em aberto. Ele pode receber em dinheiro (Configurações › Consignação › Pagar em dinheiro) ou usar para comprar (forma de pagamento "Saldo em carteira" no frente de caixa).
 - **Atualize o script** (nova versão da implantação): coluna `semCusto` criada sozinha.
 
+## v27.4.3
+- Importar backup (Configurações › Importar / restaurar backup): opção **Restaurar exatamente este backup** (apaga o que foi lançado depois dele) além de Mesclar. Baixa uma cópia do estado atual antes.
+
+## v27.4.2
+- Editar conta já paga/recebida: agora mostra e corrige o **valor pago** e a data (antes só mudava o valor e o pago continuava o antigo, então saldo, resultado e posição não mudavam). Ao corrigir o valor, o valor pago acompanha.
+- Ajuste automático da conta "CORREIOS DIEGO GONCALVES" (valor pago 4.340 → valor corrigido).
+
 ## v27.4.1
 - Importação Jamble: lê comprador com nick com espaço (ex.: "@celso henrique #3"). Antes essa venda era ignorada e o endereço/CPF dela ia para o comprador anterior.
 
